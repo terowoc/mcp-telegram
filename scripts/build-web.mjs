@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { packageWebSource } from './package-web-source.mjs';
 import { resolve } from 'node:path';
 
 export function frontendBuildEnv(mode, input = process.env) {
@@ -24,7 +25,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       const command = {production: 'build:production', mocked: 'build:mocked', dev: 'dev', 'dev:mocked': 'dev:mocked'}[mode];
       const child = spawn('npm', ['run', command], {cwd: new URL('../apps/web/', import.meta.url), env, stdio: 'inherit'});
       child.once('error', () => { console.error('Unable to start frontend builder'); process.exitCode = 1; });
-      child.once('exit', code => { process.exitCode = code ?? 1; });
+      child.once('exit', async code => {
+        process.exitCode = code ?? 1;
+        if (code === 0 && (mode === 'production' || mode === 'mocked')) {
+          try { await packageWebSource({ root: fileURLToPath(new URL('../', import.meta.url)),
+            output: fileURLToPath(new URL('../apps/web/dist/', import.meta.url)) }); }
+          catch (error) { console.error(error.message); process.exitCode = 1; }
+        }
+      });
       process.once('SIGTERM', () => child.kill('SIGTERM'));
       process.once('SIGINT', () => child.kill('SIGINT'));
     }

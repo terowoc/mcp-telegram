@@ -46,3 +46,81 @@ test("server secrets are excluded from frontend build environment", async () => 
   assert.match(output, /TG Bridge/);
   assert.equal(output.includes("1".repeat(32)), false);
 });
+
+test("worker bypasses SaaS OAuth MCP and discovery before HTML caching", async () => {
+  const { shouldBypassSaasCache } = await import("../../apps/web/src/serviceWorker/saasCache.js");
+  for (const path of [
+    "/api/saas",
+    "/api/saas/me",
+    "/api/saas/report.html",
+    "/oauth/token",
+    "/interaction/abc",
+    "/mcp",
+    "/.well-known/oauth-authorization-server",
+  ])
+    assert.equal(shouldBypassSaasCache(path), true, path);
+  for (const path of ["/", "/assets/index-12345678.js", "/mcp-help", "/share/x"])
+    assert.equal(shouldBypassSaasCache(path), false, path);
+  const worker = await readFile("apps/web/src/serviceWorker/service.worker.ts", "utf8");
+  assert.ok(worker.indexOf("if (shouldBypassSaasCache(pathname))") < worker.indexOf("respondForProgressive(e)"));
+});
+
+test("source archive contains reproducible build inputs without unlisted secrets", async () => {
+  const { mkdtemp, mkdir, writeFile, rm, symlink } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { gunzipSync } = await import("node:zlib");
+  const { packageWebSource } = await import("../../scripts/package-web-source.mjs");
+  const root = await mkdtemp(join(tmpdir(), "web-source-"));
+  try {
+    await mkdir(join(root, "apps/web"), { recursive: true });
+    await mkdir(join(root, "scripts"));
+    for (const [path, body] of Object.entries({
+      "apps/web/LICENSE": "GNU GENERAL PUBLIC LICENSE",
+      "apps/web/UPSTREAM.md": pin,
+      "apps/web/package-lock.json": "{}",
+      "apps/web/package.json": "{}",
+      "apps/web/.env": "SECRET_SENTINEL",
+      "apps/web/credentials.json": "SECRET_SENTINEL",
+      "scripts/build-web.mjs": "build",
+      "scripts/package-web-source.mjs": "package",
+    }))
+      await writeFile(join(root, path), body);
+    await writeFile(
+      join(root, "apps/web/SOURCE_FILES.json"),
+      JSON.stringify([
+        "apps/web/LICENSE",
+        "apps/web/UPSTREAM.md",
+        "apps/web/package-lock.json",
+        "apps/web/package.json",
+      ]),
+    );
+    const first = await packageWebSource({ root, output: join(root, "out") });
+    const second = await packageWebSource({ root, output: join(root, "other") });
+    assert.equal(first.sha256, second.sha256);
+    const tar = gunzipSync(await readFile(join(root, "out/source/tg-bridge-source.tar.gz")));
+    assert.equal(tar.includes(Buffer.from("SECRET_SENTINEL")), false);
+    assert.ok(first.files.includes("apps/web/package-lock.json"));
+    assert.ok(first.files.includes("apps/web/LICENSE"));
+    assert.ok(first.files.includes("scripts/build-web.mjs"));
+    assert.match(await readFile(join(root, "out/source/README.md"), "utf8"), /npm --prefix apps\/web ci/);
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "private/key.txt"), "SECRET_SENTINEL");
+    await symlink(join(root, "private"), join(root, "apps/web/linked"), "junction");
+    await writeFile(
+      join(root, "apps/web/SOURCE_FILES.json"),
+      JSON.stringify(["apps/web/linked/key.txt", "apps/web/LICENSE"]),
+    );
+    await assert.rejects(packageWebSource({ root, output: join(root, "escaped") }), /symlink/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production base and manifest use TG Bridge origin", async () => {
+  const index = await readFile("apps/web/index.html", "utf8");
+  assert.equal(index.includes("https://web.telegram.org"), false);
+  const manifest = await readFile("apps/web/public/site.webmanifest", "utf8");
+  assert.equal(manifest.includes("web.telegram.org"), false);
+  assert.match(manifest, /TG Bridge/);
+});

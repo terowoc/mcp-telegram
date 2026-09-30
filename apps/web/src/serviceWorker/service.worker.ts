@@ -8,6 +8,7 @@ import {
   handleNotificationClick,
   handlePush,
 } from './pushNotification';
+import { shouldBypassSaasCache } from './saasCache';
 import { handleClientMessage as handleShareMessage, respondForShare } from './share';
 
 declare const self: ServiceWorkerGlobalScope;
@@ -58,6 +59,8 @@ self.addEventListener('fetch', (e: FetchEvent) => {
 
   const { pathname, protocol } = new URL(url);
   const { pathname: scopePathname } = new URL(scope);
+
+  if (shouldBypassSaasCache(pathname)) return false;
 
   if (pathname.includes('/progressive/')) {
     e.respondWith(respondForProgressive(e));

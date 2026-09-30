@@ -32,3 +32,15 @@ A release source archive with the build scripts and lockfile is distributed with
 - Explicit service-worker bypass for SaaS, MCP, OAuth and discovery routes.
 
 To update upstream, record a new exact commit here, preserve the lockfile and licensing notices, and review the MCP/menu/cache integration against the new Teact UI and service worker before publishing.
+
+## Changed integration files
+
+- `index.html`, public manifests/marks, `vite.config.ts`, `package.json`, `package-lock.json`, `.env.example`: branding and explicit isolated build.
+- `src/components/{common/MainMenuDropdown,left/main/LeftSideMenuItems}.tsx`, `src/bundles/extra.ts`: lazy MCP menu/panel.
+- `src/components/mcp/`, localization fallback and generated language types: SaaS authentication, independent QR device, grants, rights and client help.
+- `src/components/ui/Modal.tsx`: native cancel listener is installed before painted dialog accepts keyboard input.
+- `src/serviceWorker/{saasCache,service.worker}.ts`: private-route cache bypass.
+- `src/lib/gramjs/client/MockClient.ts`, synthetic mcp scenario/middleware, `tests/`: offline acceptance harness.
+- `SOURCE_FILES.json`: exact distribution inventory; root `scripts/{build-web,package-web-source}.mjs`: reproducible build/archive entrypoints.
+
+The source archive is made from the current build inputs, with stable tar timestamps, ownership and gzip output. Only inventory files enter it. Updating the fork requires updating this inventory with reviewed public source files. `/source/README.md`, `LICENSE.txt`, `UPSTREAM.md` and `SHA256SUMS` accompany the downloadable archive.

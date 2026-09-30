@@ -163,3 +163,12 @@ test('recovery changes the password and a client can be revoked with confirmatio
     await expect(page.getByText('Вы вошли как browser_fixture', { exact: true })).toBeVisible();
   } finally { await close(); }
 });
+
+test('corresponding source and license are downloadable', async ({ request }) => {
+  const license = await request.get('/source/LICENSE.txt');
+  expect(license.status()).toBe(200);
+  expect(await license.text()).toContain('GNU GENERAL PUBLIC LICENSE');
+  const archive = await request.get('/source/tg-bridge-source.tar.gz');
+  expect(archive.status()).toBe(200);
+  expect((await archive.body()).subarray(0, 2).toString('hex')).toBe('1f8b');
+});
