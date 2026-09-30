@@ -1,44 +1,54 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const DEFAULT_SESSION_DIR = join(homedir(), ".mcp-telegram");
 
-function resolveSessionDir(): string {
-  const sessionPath = process.env.TELEGRAM_SESSION_PATH;
-  if (sessionPath) return dirname(sessionPath);
-  return DEFAULT_SESSION_DIR;
+function canonicalSessionPath(): string {
+  let path = resolve(process.env.TELEGRAM_SESSION_PATH ?? join(DEFAULT_SESSION_DIR, "session"));
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return join(realpathSync.native(path), ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(path);
+      if (parent === path) throw error;
+      missing.unshift(basename(path));
+      path = parent;
+    }
+  }
+}
+
+function sessionIdentity(): { dir: string; hash: string } {
+  const path = canonicalSessionPath();
+  const identity = process.platform === "win32" ? path.toLowerCase() : path;
+  return { dir: dirname(path), hash: createHash("sha256").update(identity).digest("hex").slice(0, 32) };
 }
 
 export function lockPath(): string {
-  return join(resolveSessionDir(), "daemon.lock");
+  const { dir, hash } = sessionIdentity();
+  return join(dir, `daemon-${hash}.lock`);
 }
 
-const WIN_PIPE_PREFIX = "\\\\.\\pipe\\mcp-telegram-";
-
-/**
- * Windows has no filesystem-path IPC in Node: `net.Server.listen(path)` only accepts the
- * named-pipe namespace (`\\.\pipe\...`), so listening on `<sessionDir>/daemon.sock` fails
- * with `listen EACCES` and the master dies before it ever reaches Telegram.
- *
- * The name is derived from the session dir so two accounts (different TELEGRAM_SESSION_PATH)
- * get separate pipes, and it is lower-cased first because Windows paths are case-insensitive:
- * otherwise a master started via `C:\Users\x` and a client started via `c:\users\x` would look
- * for each other on two different pipes and both would try to become master.
- */
-function winPipeName(dir: string): string {
-  const normalized = dir.toLowerCase();
-  const slug = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  // Pipe names are length-capped. Hash long dirs instead of truncating, so two deep paths
-  // sharing a prefix can't collapse onto one pipe and cross-talk between accounts.
-  if (slug.length <= 64) return WIN_PIPE_PREFIX + slug;
-  return WIN_PIPE_PREFIX + createHash("sha1").update(normalized).digest("hex").slice(0, 32);
-}
-
+/** Full session-file identity isolates accounts even when they share a directory. */
 export function socketPath(): string {
-  if (process.platform === "win32") return winPipeName(resolveSessionDir());
-  return join(resolveSessionDir(), "daemon.sock");
+  const { dir, hash } = sessionIdentity();
+  if (process.platform === "win32") return `\\\\.\\pipe\\mcp-telegram-${hash}`;
+  const candidate = join(dir, `daemon-${hash}.sock`);
+  if (Buffer.byteLength(candidate) <= 100) return candidate;
+  const shortDir = join("/tmp", `mcp-telegram-ipc-${process.getuid?.() ?? "user"}`);
+  mkdirSync(shortDir, { recursive: true, mode: 0o700 });
+  const info = lstatSync(shortDir);
+  const uid = process.getuid?.();
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (uid !== undefined && (info.uid !== uid || (info.mode & 0o077) !== 0))
+  )
+    throw new Error("Unsafe private IPC directory");
+  return join(shortDir, `${hash}.sock`);
 }
 
 /**
@@ -54,6 +64,21 @@ export function tryAcquireLock(): boolean {
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  const legacy = join(dir, "daemon.lock");
+  if (existsSync(legacy)) {
+    const pid = Number.parseInt(readFileSync(legacy, "utf8").trim(), 10);
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0);
+        console.error(
+          "[mcp-telegram] Legacy daemon is running; restart it with the updated version before connecting.",
+        );
+        return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return false;
+      }
+    }
   }
 
   if (existsSync(lock)) {
@@ -91,9 +116,8 @@ export function tryAcquireLock(): boolean {
   }
 }
 
-export function releaseLock(): void {
+export function releaseLock(lock: string = lockPath()): void {
   try {
-    const lock = lockPath();
     if (existsSync(lock)) {
       const pid = Number.parseInt(readFileSync(lock, "utf-8").trim(), 10);
       // Only remove our own lock
@@ -102,15 +126,13 @@ export function releaseLock(): void {
   } catch {}
 }
 
-export function releaseSocket(): void {
+export function releaseSocket(sock: string = socketPath(), lock: string = lockPath()): void {
   try {
-    const sock = socketPath();
     if (!existsSync(sock)) return;
     // Ownership guard (mirrors releaseLock): never unlink a socket owned by a different,
     // still-alive process. Otherwise any process that imports this module and exits (e.g. a
     // one-shot run or a test on the same host) would delete a running daemon's socket file,
     // leaving the daemon listening in memory but unreachable for new clients.
-    const lock = lockPath();
     if (existsSync(lock)) {
       const pid = Number.parseInt(readFileSync(lock, "utf-8").trim(), 10);
       // Ignore non-positive PIDs (e.g. 0) so kill() can't probe our own process group.

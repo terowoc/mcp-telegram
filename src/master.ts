@@ -11,7 +11,7 @@ import {
   type McpServerInternal,
   parseMessages,
 } from "./ipc-protocol.js";
-import { releaseLock, releaseSocket, socketPath } from "./lock.js";
+import { lockPath, releaseLock, releaseSocket, socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
 import { registerTools } from "./tools/index.js";
 
@@ -24,14 +24,15 @@ import { registerTools } from "./tools/index.js";
 const TOOL_CALL_TIMEOUT_MS = 28_000;
 
 let cleanedUp = false;
+let ownedPaths: { lock: string; socket: string } | undefined;
 
 function cleanup() {
-  if (cleanedUp) return;
+  if (cleanedUp || !ownedPaths) return;
   cleanedUp = true;
   // Sync unlink only — process.exit handlers cannot await async server.close(),
   // and unlinking the socket file is sufficient to release the listening address.
-  releaseLock();
-  releaseSocket();
+  releaseSocket(ownedPaths.socket, ownedPaths.lock);
+  releaseLock(ownedPaths.lock);
 }
 
 process.on("exit", cleanup);
@@ -226,11 +227,12 @@ export async function startOwner(
   const server = new McpServer({ name: "mcp-telegram", version });
   registerTools(server, telegram);
   const mcpServer = server as unknown as McpServerInternal;
+  ownedPaths = { lock: lockPath(), socket: socketPath() };
 
   // Remove a stale socket file from a previous crash before attempting to listen.
   releaseSocket();
 
-  const sock = socketPath();
+  const sock = ownedPaths.socket;
   const srv = createServer((socket) => {
     console.error(`[${label}] client connected`);
     socket.on("close", () => console.error(`[${label}] client disconnected`));
