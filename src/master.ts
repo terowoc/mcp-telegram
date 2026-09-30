@@ -4,12 +4,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { GlobalLock } from "./global-lock.js";
 import {
   encodeMessage,
+  IpcDecoder,
   type IpcLoginStart,
   type IpcMessage,
   type IpcToolRequest,
   type IpcToolResponse,
   type McpServerInternal,
-  parseMessages,
 } from "./ipc-protocol.js";
 import { lockPath, releaseLock, releaseSocket, socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
@@ -84,7 +84,7 @@ export function handleClient(
   opts: HandleClientOptions = {},
 ) {
   const toolCallTimeoutMs = opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS;
-  let buf = "";
+  const decoder = new IpcDecoder();
   let processing = false;
   const queue: IpcMessage[] = [];
 
@@ -108,9 +108,13 @@ export function handleClient(
   }
 
   socket.on("data", (chunk) => {
-    buf += chunk.toString("utf-8");
-    const { messages, remaining } = parseMessages(buf);
-    buf = remaining;
+    let messages: IpcMessage[];
+    try {
+      messages = decoder.push(chunk);
+    } catch {
+      socket.destroy();
+      return;
+    }
     for (const msg of messages) queue.push(msg);
     drainQueue();
   });

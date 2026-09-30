@@ -1,3 +1,23 @@
+import { StringDecoder } from "node:string_decoder";
+
+export const MAX_IPC_FRAME_BYTES = 4 * 1048576;
+
+/** Keeps partial UTF-8 code points across socket chunks and bounds each frame. */
+export class IpcDecoder {
+  private decoder = new StringDecoder("utf8");
+  private buffer = "";
+  constructor(private maxBytes = MAX_IPC_FRAME_BYTES) {}
+  push(chunk: Buffer | string): IpcMessage[] {
+    this.buffer += this.decoder.write(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    for (const line of this.buffer.split("\n")) {
+      if (Buffer.byteLength(line) > this.maxBytes) throw new Error("IPC frame exceeds size limit");
+    }
+    const { messages, remaining } = parseMessages(this.buffer);
+    this.buffer = remaining;
+    return messages;
+  }
+}
+
 /** MCP SDK internal tool registry — field name "handler" confirmed in SDK v1.29.0 */
 export type McpRegisteredTool = {
   handler: (args: Record<string, unknown>, extra: Record<string, unknown>) => Promise<unknown>;

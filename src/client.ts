@@ -4,10 +4,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   encodeMessage,
+  IpcDecoder,
   type IpcLoginDone,
   type IpcMessage,
   type McpServerInternal,
-  parseMessages,
 } from "./ipc-protocol.js";
 import { socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
@@ -38,7 +38,6 @@ export class IpcClient {
   private socket: Socket | null = null;
   private pending = new Map<string, PendingCall>();
   private pendingLogins = new Map<string, PendingLogin>();
-  private buf = "";
   private connected = false;
   private destroyed = false;
   private onDisconnect?: () => void;
@@ -77,11 +76,13 @@ export class IpcClient {
         this.connected = true;
         s.removeListener("error", onError);
 
+        const decoder = new IpcDecoder();
         s.on("data", (chunk) => {
-          this.buf += chunk.toString("utf-8");
-          const { messages, remaining } = parseMessages(this.buf);
-          this.buf = remaining;
-          for (const msg of messages) this.routeMessage(msg);
+          try {
+            for (const msg of decoder.push(chunk)) this.routeMessage(msg);
+          } catch {
+            s.destroy();
+          }
         });
 
         s.on("close", () => {
