@@ -3,6 +3,33 @@ import { describe, it } from "node:test";
 import { GlobalLock } from "../global-lock.js";
 
 describe("GlobalLock", () => {
+  it("reserves ownership during handoff so a new arrival cannot overlap a waiter", async () => {
+    const lock = new GlobalLock();
+    const release = await lock.acquire();
+    const first = lock.acquire();
+    release();
+    let secondAcquired = false;
+    const second = lock.acquire().then((unlock) => {
+      secondAcquired = true;
+      return unlock;
+    });
+    const unlockFirst = await first;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(secondAcquired, false);
+    unlockFirst();
+    (await second)();
+  });
+  it("removes aborted waiters without blocking later requests", { timeout: 1000 }, async () => {
+    const lock = new GlobalLock();
+    const release = await lock.acquire();
+    const abort = new AbortController();
+    const pending = lock.acquire(abort.signal);
+    abort.abort();
+    await assert.rejects(pending);
+    assert.equal(lock.waitingCount(), 0);
+    release();
+    (await lock.acquire())();
+  });
   it("single acquire/release cycle works", async () => {
     const lock = new GlobalLock();
     assert.strictEqual(lock.isLocked(), false);

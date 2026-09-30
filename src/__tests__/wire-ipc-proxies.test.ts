@@ -2,17 +2,13 @@ import assert from "node:assert";
 import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
 import { describe, it } from "node:test";
-import { IpcClient } from "../client.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { IpcClient, wireIpcProxies as wireProductionProxies } from "../client.js";
 import { encodeMessage, type McpRegisteredTool } from "../ipc-protocol.js";
 
-// Inline wireIpcProxies since it's not exported — test via its observable effects
-// We reproduce the logic from client.ts to keep test self-contained
 function wireIpcProxies(registry: Record<string, McpRegisteredTool>, ipc: IpcClient): void {
-  for (const [name, tool] of Object.entries(registry)) {
-    Object.assign(tool, {
-      handler: (args: Record<string, unknown>) => ipc.call(name, args),
-    });
-  }
+  wireProductionProxies({ _registeredTools: registry } as unknown as McpServer, ipc);
 }
 
 class FakeSocket extends EventEmitter {
@@ -44,7 +40,10 @@ describe("wireIpcProxies", () => {
     const ipc = await makeConnectedClient(fake);
 
     const registry: Record<string, McpRegisteredTool> = {
-      "telegram-send-message": { handler: async () => ({ original: true }) },
+      "telegram-send-message": {
+        inputSchema: z.object({ text: z.string() }),
+        handler: async () => ({ original: true }),
+      },
       "telegram-list-chats": { handler: async () => ({ original: true }) },
     };
 

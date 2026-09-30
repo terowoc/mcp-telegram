@@ -21,6 +21,8 @@ export class IpcDecoder {
 /** MCP SDK internal tool registry — field name "handler" confirmed in SDK v1.29.0 */
 export type McpRegisteredTool = {
   handler: (args: Record<string, unknown>, extra: Record<string, unknown>) => Promise<unknown>;
+  inputSchema?: { safeParseAsync: (args: unknown) => Promise<{ success: boolean; data?: unknown }> };
+  enabled?: boolean;
 };
 export interface McpServerInternal {
   _registeredTools: Record<string, McpRegisteredTool>;
@@ -32,6 +34,13 @@ export interface IpcToolRequest {
   id: string;
   tool: string;
   args: Record<string, unknown>;
+  deadlineAt?: number;
+}
+
+/** Client → Master: cancel an active or queued request. */
+export interface IpcCancel {
+  type: "cancel";
+  id: string;
 }
 
 /** Master → Client: tool result */
@@ -64,11 +73,13 @@ export interface IpcLoginDone {
   error?: string;
 }
 
-export type IpcMessage = IpcToolRequest | IpcToolResponse | IpcLoginStart | IpcLoginQr | IpcLoginDone;
+export type IpcMessage = IpcToolRequest | IpcToolResponse | IpcLoginStart | IpcLoginQr | IpcLoginDone | IpcCancel;
 
 /** Encode a message as newline-delimited JSON */
 export function encodeMessage(msg: IpcMessage): string {
-  return `${JSON.stringify(msg)}\n`;
+  const encoded = JSON.stringify(msg);
+  if (Buffer.byteLength(encoded) > MAX_IPC_FRAME_BYTES) throw new Error("IPC frame exceeds size limit");
+  return `${encoded}\n`;
 }
 
 /** Parse newline-delimited JSON messages from a buffer, returns parsed messages + leftover */
@@ -91,8 +102,19 @@ export function parseMessages(buf: string): { messages: IpcMessage[]; remaining:
 
 function isIpcMessage(m: Partial<IpcMessage>): m is IpcMessage {
   if (!m || typeof m !== "object" || typeof m.type !== "string" || typeof m.id !== "string") return false;
+  if (Buffer.byteLength(m.id) > 128) return false;
+  if (m.type === "tool") {
+    return (
+      typeof m.tool === "string" &&
+      Buffer.byteLength(m.tool) <= 128 &&
+      !!m.args &&
+      typeof m.args === "object" &&
+      !Array.isArray(m.args) &&
+      (m.deadlineAt === undefined || (typeof m.deadlineAt === "number" && Number.isFinite(m.deadlineAt)))
+    );
+  }
   return (
-    m.type === "tool" ||
+    m.type === "cancel" ||
     m.type === "tool_response" ||
     m.type === "login_start" ||
     m.type === "login_qr" ||

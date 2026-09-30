@@ -182,12 +182,15 @@ describe("handleClient / drainQueue", () => {
     assert.strictEqual((result as IpcToolResponse).id, "valid");
   });
 
-  it("client disconnects during slow handler → no crash, other clients unaffected", async () => {
+  it("disconnect retains ownership until the underlying operation settles, then recovers", async () => {
     let handlerStarted = false;
+    let settle!: () => void;
     await startServer({
       slow: async () => {
         handlerStarted = true;
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise<void>((resolve) => {
+          settle = resolve;
+        });
         return "done";
       },
       fast: async () => "fast-result",
@@ -208,7 +211,11 @@ describe("handleClient / drainQueue", () => {
     assert.strictEqual(handlerStarted, true);
 
     const [res] = await roundtrip(sockPath, [toolRequest("f1", "fast")], 1);
-    assert.strictEqual(res.result, "fast-result");
+    assert.match(res.error ?? "", /settling|unavailable/);
+    settle();
+    await new Promise((resolve) => setImmediate(resolve));
+    const [recovered] = await roundtrip(sockPath, [toolRequest("f2", "fast")], 1);
+    assert.strictEqual(recovered.result, "fast-result");
   });
 
   it("fragmented TCP data → messages still parsed correctly", async () => {

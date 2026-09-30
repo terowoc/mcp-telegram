@@ -1,18 +1,12 @@
 import assert from "node:assert";
 import { connect, createServer, type Server } from "node:net";
-import { after, before, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { encodeMessage, type IpcToolRequest, type IpcToolResponse, parseMessages } from "../ipc-protocol.js";
 import { handleClient } from "../master.js";
 import { cleanupIpcEndpoint, makeIpcEndpoint } from "./ipc-endpoint.helper.js";
 
-/**
- * Regression tests for the second half of issue #71.
- *
- * A tool call issued on a dead MTProto client never settles. handleToolRequest holds
- * globalLock for the whole call, so one stuck call wedges *every* client's tool calls, not
- * just its own — the caller-side IPC_CALL_TIMEOUT_MS only rejects one promise and leaves the
- * master exactly as stuck. The fix bounds each call and marks the connection unhealthy so the
- * next one reconnects.
+/** A timed-out response does not prove the underlying Telegram operation stopped.
+ * Keep the owner unavailable until settlement or process replacement, across all clients.
  */
 
 type McpServerInternal = Parameters<typeof handleClient>[1];
@@ -45,7 +39,7 @@ const never = () => new Promise<unknown>(() => {});
 let server: Server;
 let spy: ReturnType<typeof makeSpyTelegram>;
 
-before(async () => {
+beforeEach(async () => {
   cleanupIpcEndpoint(SOCK);
 
   spy = makeSpyTelegram();
@@ -59,7 +53,7 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(SOCK, resolve));
 });
 
-after(async () => {
+afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   cleanupIpcEndpoint(SOCK);
 });
@@ -107,7 +101,7 @@ describe("per-call timeout in the master", () => {
     assert.match(String(res.error), /timed out after 120ms: telegram-hangs/);
   });
 
-  it("marks the Telegram connection unhealthy so the next call reconnects", async () => {
+  it("marks the Telegram connection unhealthy on timeout", async () => {
     spy.reasons.length = 0;
     await roundtrip([req("2", "telegram-hangs")], 1);
     assert.deepStrictEqual(spy.reasons, ["tool call timed out: telegram-hangs"]);
@@ -119,25 +113,25 @@ describe("per-call timeout in the master", () => {
     assert.deepStrictEqual(res.result, { content: [{ type: "text", text: "ok" }] });
   });
 
-  it("releases globalLock — a hung call must not wedge later calls on the same socket", async () => {
-    // The core of #71: pre-fix the second request would never be answered, because the
-    // first still holds globalLock. Both must come back, in order.
+  it("rejects further dispatch while a hung operation is live on the same socket", async () => {
+    // Answer both requests, without allowing a second operation to overlap the first.
     const responses = await roundtrip([req("4", "telegram-hangs"), req("5", "telegram-fast")], 2);
     assert.deepStrictEqual(
       responses.map((r) => r.id),
       ["4", "5"],
     );
     assert.match(String(responses[0].error), /timed out/);
-    assert.strictEqual(responses[1].error, undefined, "a later call must still succeed");
+    assert.match(String(responses[1].error), /settling|unavailable|deadline/);
   });
 
-  it("releases globalLock across clients — a hung call on socket A must not wedge socket B", async () => {
+  it("does not dispatch a second client against a live timed-out operation", async () => {
     // globalLock is process-wide, so the cross-client case is the one that actually took
     // production down: one wedged client starved every other MCP client of the daemon.
     const hung = roundtrip([req("6", "telegram-hangs")], 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const other = roundtrip([req("7", "telegram-fast")], 1);
     const [hungRes, otherRes] = await Promise.all([hung, other]);
     assert.match(String(hungRes[0].error), /timed out/);
-    assert.strictEqual(otherRes[0].error, undefined);
+    assert.match(String(otherRes[0].error), /settling|unavailable|deadline|timed out/);
   });
 });
