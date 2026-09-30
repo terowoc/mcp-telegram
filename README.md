@@ -491,3 +491,7 @@ Then set `TELEGRAM_SESSION_PATH` in each environment's MCP config accordingly.
 ## License
 
 MIT
+
+## TG Bridge frontend licensing
+
+The Telegram Web A frontend in `apps/web` is a GPL-3.0-or-later fork of [Ajaxy/telegram-tt](https://github.com/Ajaxy/telegram-tt), pinned in [UPSTREAM.md](apps/web/UPSTREAM.md). Its copyright and license notices remain in place. The MCP backend retains its MIT license. Frontend builds require a separate browser Telegram application; server credentials must not be embedded. See [SaaS deployment and API contract](docs/guides/saas.md).
