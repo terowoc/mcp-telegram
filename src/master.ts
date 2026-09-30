@@ -207,6 +207,7 @@ export interface OwnerHandle {
   server: McpServer;
   srv: Server;
   gracefulExit: () => Promise<void>;
+  beforeShutdown?: () => Promise<void>;
 }
 
 /**
@@ -254,11 +255,13 @@ export async function startOwner(
   console.error(`[${label}] IPC socket ready: ${sock}`);
 
   let shuttingDown = false;
+  const handle: OwnerHandle = { server, srv, gracefulExit: async () => {} };
   const gracefulExit = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[${label}] Shutting down, disconnecting from Telegram...`);
     try {
+      await handle.beforeShutdown?.();
       await telegram.disconnect();
     } catch (err) {
       console.error(`[${label}] Disconnect error:`, err);
@@ -284,7 +287,8 @@ export async function startOwner(
       console.error(`[${label}] Auto-connect failed:`, err);
     });
 
-  return { server, srv, gracefulExit };
+  handle.gracefulExit = gracefulExit;
+  return handle;
 }
 
 export async function runMaster(apiId: number, apiHash: string, version: string): Promise<void> {

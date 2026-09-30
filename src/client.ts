@@ -200,7 +200,7 @@ export class IpcClient {
   }
 }
 
-function wireIpcProxies(server: McpServer, ipc: IpcClient): void {
+export function wireIpcProxies(server: McpServer, ipc: Pick<IpcClient, "call">): void {
   const s = server as unknown as McpServerInternal;
   for (const [name, tool] of Object.entries(s._registeredTools)) {
     Object.assign(tool, {
