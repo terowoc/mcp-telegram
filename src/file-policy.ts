@@ -16,9 +16,7 @@ export class FilePolicy {
     if (!this.root) return path;
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const root = await realpath(this.root);
-    const target = output
-      ? resolve(await realpath(dirname(path)), basename(path))
-      : await realpath(path);
+    const target = output ? resolve(await realpath(dirname(path)), basename(path)) : await realpath(path);
     const rel = relative(root, target);
     if (!rel || rel.startsWith("..") || isAbsolute(rel))
       throw new Error("Media path must stay inside the configured file root");
