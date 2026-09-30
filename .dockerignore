@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+dist
+.env*
+*.env
+*.pem
+*.key
+**/session
+**/.telegram-session
+.superpowers
+.ralphex
+coverage
+docs
+qr-login.*

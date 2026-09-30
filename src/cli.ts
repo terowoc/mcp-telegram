@@ -5,6 +5,8 @@ const command = process.argv[2];
 
 if (command === "login") {
   await import("./qr-login-cli.js");
+} else if (command === "http") {
+  await import("./http/main.js");
 } else {
   await import("./index.js");
 }

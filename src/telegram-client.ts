@@ -13,6 +13,7 @@ import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
 import { getInputUser } from "telegram/Utils.js";
+import { mediaPolicy } from "./file-policy.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type {
   AllStoriesSummary,
@@ -876,6 +877,7 @@ export class TelegramService {
    */
   async sendFile(chatId: string, filePath: string, caption?: string, opts: { fileName?: string } = {}): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    filePath = await mediaPolicy().upload(filePath);
     const fileName = opts.fileName;
     // pi-lens-ignore: sql-injection
     await this.rateLimiter.execute(async () => {
@@ -908,6 +910,7 @@ export class TelegramService {
     } = {},
   ): Promise<{ id: number }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     // pi-lens-ignore: sql-injection
     return this.rateLimiter.execute(async () => {
@@ -937,6 +940,7 @@ export class TelegramService {
     } = {},
   ): Promise<{ id: number }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     // pi-lens-ignore: sql-injection
     return this.rateLimiter.execute(async () => {
@@ -1127,6 +1131,9 @@ export class TelegramService {
     } = {},
   ): Promise<{ ids: number[] }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    items = await Promise.all(
+      items.map(async (item) => ({ ...item, filePath: await mediaPolicy().upload(item.filePath) })),
+    );
     if (items.length < 2 || items.length > 10) {
       throw new Error("Album requires 2-10 items");
     }
@@ -1173,9 +1180,14 @@ export class TelegramService {
     const message = messages[0];
     if (!message) throw new Error(`Message ${messageId} not found`);
     if (!message.media) throw new Error(`Message ${messageId} has no media`);
-    const buffer = await this.client.downloadMedia(message);
+    const buffer = await this.client.downloadMedia(message, {
+      progressCallback: async (received, total) => {
+        mediaPolicy().checkSize(Number(received));
+        mediaPolicy().checkSize(Number(total));
+      },
+    });
     if (!buffer) throw new Error("Failed to download media");
-    await writeFile(downloadPath, buffer as Buffer);
+    await mediaPolicy().save(downloadPath, buffer as Buffer);
     return downloadPath;
   }
 
@@ -1212,11 +1224,23 @@ export class TelegramService {
     let isThumb = false;
     let buffer: Buffer | undefined;
     if (options?.thumb !== undefined) {
-      buffer = (await this.client.downloadMedia(message, { thumb: options.thumb })) as Buffer | undefined;
+      buffer = (await this.client.downloadMedia(message, {
+        thumb: options.thumb,
+        progressCallback: async (received, total) => {
+          mediaPolicy().checkSize(Number(received));
+          mediaPolicy().checkSize(Number(total));
+        },
+      })) as Buffer | undefined;
       isThumb = !!buffer?.length;
     }
     // No thumb requested, or this media has no thumbnail at that size → full file.
-    if (!buffer?.length) buffer = (await this.client.downloadMedia(message)) as Buffer;
+    if (!buffer?.length)
+      buffer = (await this.client.downloadMedia(message, {
+        progressCallback: async (received, total) => {
+          mediaPolicy().checkSize(Number(received));
+          mediaPolicy().checkSize(Number(total));
+        },
+      })) as Buffer;
     if (!buffer?.length) throw new Error("Failed to download media");
 
     const mimeType = this.detectMimeType(buffer, message.media);
@@ -2464,11 +2488,12 @@ export class TelegramService {
     })) as Buffer | undefined;
 
     if (!buffer || buffer.length === 0) return null;
+    mediaPolicy().checkSize(buffer.length);
 
     const mimeType = this.detectMimeFromBuffer(buffer);
 
     if (options?.savePath) {
-      await writeFile(options.savePath, buffer);
+      await mediaPolicy().save(options.savePath, buffer);
       return { filePath: options.savePath };
     }
 
@@ -3411,6 +3436,7 @@ export class TelegramService {
     options: { title?: string; description?: string; photoPath?: string },
   ): Promise<void> {
     if (!this.client) throw new Error(NOT_CONNECTED_ERROR);
+    if (options.photoPath) options = { ...options, photoPath: await mediaPolicy().upload(options.photoPath) };
 
     const entity = await this.resolveChat(chatId);
 
@@ -5203,6 +5229,7 @@ export class TelegramService {
     fallback: boolean;
   }): Promise<{ id: string }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    opts = { ...opts, filePath: await mediaPolicy().upload(opts.filePath) };
     const client = this.client;
     return this.rateLimiter.execute(async () => {
       const inputFile = await client.uploadFile({
@@ -5908,6 +5935,7 @@ export class TelegramService {
     },
   ): Promise<{ id: number | undefined; period: number }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     const peer = await this.resolvePeer(chatId);
     return this.rateLimiter.execute(async () => {
@@ -5968,6 +5996,7 @@ export class TelegramService {
     },
   ): Promise<{ changed: string[] }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    if (opts.filePath) opts = { ...opts, filePath: await mediaPolicy().upload(opts.filePath) };
     const client = this.client;
     const peer = await this.resolvePeer(chatId);
     return this.rateLimiter.execute(async () => {

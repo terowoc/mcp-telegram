@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   release-please:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     runs-on: ubuntu-latest
     steps:
       # v5's only breaking change vs v4 is the bundled runtime (Node 20 → 24),

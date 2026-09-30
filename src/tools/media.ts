@@ -37,7 +37,7 @@ export function registerMediaTools(server: McpServer, telegram: TelegramService)
         messageId: z.number().describe("Message ID containing media"),
         downloadPath: z.string().describe("Absolute path to save file"),
       },
-      annotations: READ_ONLY,
+      annotations: WRITE,
     },
     async ({ chatId, messageId, downloadPath }) => {
       const err = await requireConnection(telegram);
@@ -65,7 +65,7 @@ export function registerMediaTools(server: McpServer, telegram: TelegramService)
           .optional()
           .describe("Photo size: 'small' (160x160) or 'big' (640x640). Default: big"),
       },
-      annotations: READ_ONLY,
+      annotations: WRITE,
     },
     async ({ entityId, savePath, size }) => {
       const err = await requireConnection(telegram);

@@ -12,6 +12,7 @@ on:
 
 jobs:
   publish-npm:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -51,6 +52,7 @@ jobs:
           exit 1
 
   publish-mcp-registry:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     # Publish server metadata to the official MCP Registry (registry.modelcontextprotocol.io).
     # Runs after publish-npm so the npm package the registry verifies ownership against
     # already exists. Auth is GitHub OIDC (id-token: write) — no secret needed; the
@@ -142,6 +144,7 @@ jobs:
         run: ./mcp-publisher publish
 
   publish-docker:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -167,6 +170,7 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
 
   publish-binaries:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     # Runs for both `release: published` and a manual `workflow_dispatch` on a tag.
     # release-please creates the GitHub Release with the default GITHUB_TOKEN, which
     # does NOT trigger the `release` event (loop-protection) — so real releases are
