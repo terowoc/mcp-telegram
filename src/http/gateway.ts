@@ -288,6 +288,12 @@ export async function createHttpGateway(options: GatewayOptions) {
           .json({ jsonrpc: "2.0", error: { code: -32600, message: "JSON-RPC batches are not supported" }, id: null });
         return;
       }
+      if (typeof req.body?.id === "string" && Buffer.byteLength(req.body.id) > 128) {
+        res
+          .status(400)
+          .json({ jsonrpc: "2.0", error: { code: -32600, message: "Request ID exceeds 128 bytes" }, id: null });
+        return;
+      }
       const server = new McpServer({ name: "mcp-telegram", version: options.version });
       registerTools(server, {} as TelegramService);
       wireIpcProxies(server, {

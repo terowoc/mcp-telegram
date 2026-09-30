@@ -192,6 +192,17 @@ describe("authenticated HTTPS gateway contract", () => {
       ]),
     });
     assert.equal(batch.status, 400);
+    const longId = await request("/mcp", {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "x".repeat(8192),
+        method: "tools/call",
+        params: { name: "telegram-status", arguments: {} },
+      }),
+    });
+    assert.equal(longId.status, 400);
     const call = await request("/mcp", {
       method: "POST",
       headers: mcpHeaders,
