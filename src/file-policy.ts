@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { mkdir, open, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { isSafeAbsolutePath } from "./tools/shared.js";
 
 export class FilePolicy {
@@ -17,7 +17,7 @@ export class FilePolicy {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const root = await realpath(this.root);
     const target = output
-      ? resolve(await realpath(dirname(path)), path.substring(path.lastIndexOf("/") + 1))
+      ? resolve(await realpath(dirname(path)), basename(path))
       : await realpath(path);
     const rel = relative(root, target);
     if (!rel || rel.startsWith("..") || isAbsolute(rel))
