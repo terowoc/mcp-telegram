@@ -34,6 +34,7 @@ interface Options {
   publicUrl: string;
   revokeGrants: (ids: string[]) => Promise<void>;
   attempts?: LoginAttempts;
+  purgeUserFiles?: (userId: string) => Promise<void>;
 }
 export type SaasRouter = Router & { close: () => Promise<void> };
 
@@ -330,6 +331,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       const ids = store.listGrants(userId).map((g) => g.grantId);
       store.disableUser(userId);
       await stopAccess(userId, ids);
+      await options.purgeUserFiles?.(userId);
       store.deleteUser(userId);
       clearCookie(res);
       res.sendStatus(204);
