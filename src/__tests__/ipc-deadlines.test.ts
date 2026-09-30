@@ -107,3 +107,17 @@ it("raw IPC validates tool arguments instead of bypassing MCP schemas", async (t
   assert.match(result.error ?? "", /invalid.*argument/i);
   assert.equal(calls, 0);
 });
+
+it("doctor remains available while the operation queue is blocked", async (t) => {
+  const { send, response } = await fixture(t, {
+    _registeredTools: {
+      slow: { handler: async () => new Promise(() => {}) },
+    },
+  });
+  send({ type: "tool", id: "slow", tool: "slow", args: {} });
+  await delay(10);
+  send({ type: "tool", id: "doctor", tool: "telegram-doctor", args: {} });
+  const result = await response("doctor");
+  assert.equal(result.error, undefined);
+  assert.ok(result.result && typeof result.result === "object");
+});

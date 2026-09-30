@@ -23,6 +23,7 @@ export type McpRegisteredTool = {
   handler: (args: Record<string, unknown>, extra: Record<string, unknown>) => Promise<unknown>;
   inputSchema?: { safeParseAsync: (args: unknown) => Promise<{ success: boolean; data?: unknown }> };
   enabled?: boolean;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 };
 export interface McpServerInternal {
   _registeredTools: Record<string, McpRegisteredTool>;

@@ -16,7 +16,7 @@ export interface GatewayOptions {
   storageDir: string;
   ownerPasswordHash: string;
   version: string;
-  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  callTool: (name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<unknown>;
   isHealthy?: () => boolean;
   allowedOrigins?: string[];
   trustProxy?: string | number;
@@ -297,8 +297,8 @@ export async function createHttpGateway(options: GatewayOptions) {
       const server = new McpServer({ name: "mcp-telegram", version: options.version });
       registerTools(server, {} as TelegramService);
       wireIpcProxies(server, {
-        call: async (name, args) => {
-          const result = await options.callTool(name, args);
+        call: async (name, args, callOptions) => {
+          const result = await options.callTool(name, args, callOptions);
           if (Buffer.byteLength(JSON.stringify(result)) > 2 * 1048576 - 1024)
             throw new Error("Tool response exceeds hosted output limit; use pagination");
           return result;

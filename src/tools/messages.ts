@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
 import {
   checkMessageLength,
@@ -87,7 +88,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       description: "Read recent messages from a Telegram chat with sender names, dates, media info, and reactions",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        limit: z.number().default(10).describe("Number of messages to return"),
+        limit: pageLimit(10).describe("Number of messages to return"),
         offsetId: z.number().optional().describe("Message ID to start from (for pagination)"),
         minDate: z.number().optional().describe("Unix timestamp: only messages after this date"),
         maxDate: z.number().optional().describe("Unix timestamp: only messages before this date"),
@@ -120,7 +121,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         query: z.string().describe("Search text"),
-        limit: z.number().default(20).describe("Max results"),
+        limit: pageLimit(20).describe("Max results"),
         minDate: z.number().optional().describe("Unix timestamp: only messages after this date"),
         maxDate: z.number().optional().describe("Unix timestamp: only messages before this date"),
       },
@@ -151,7 +152,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       description: "Search messages globally across all public Telegram chats and channels",
       inputSchema: {
         query: z.string().describe("Search text"),
-        limit: z.number().default(20).describe("Max results"),
+        limit: pageLimit(20).describe("Max results"),
         minDate: z.number().optional().describe("Unix timestamp: only messages after this date"),
         maxDate: z.number().optional().describe("Unix timestamp: only messages before this date"),
       },
@@ -257,7 +258,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
     {
       description: "Get chats with unread messages. Forums show per-topic unread breakdown",
       inputSchema: {
-        limit: z.number().default(20).describe("Number of unread chats to return"),
+        limit: pageLimit(20).describe("Number of unread chats to return"),
       },
       annotations: READ_ONLY,
     },
@@ -350,7 +351,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       inputSchema: {
         chatId: z.string().describe("Chat ID or username (channel or linked discussion group)"),
         messageId: z.number().describe("ID of the message whose replies to fetch"),
-        limit: z.number().default(20).describe("Number of replies to return"),
+        limit: pageLimit(20).describe("Number of replies to return"),
       },
       annotations: READ_ONLY,
     },
@@ -404,7 +405,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         "Get unread @mentions addressed to you in a Telegram chat. Marks all mentions as read on the server when all unread mentions fit within the requested limit.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        limit: z.number().default(20).describe("Max number of mentions to return"),
+        limit: pageLimit(20).describe("Max number of mentions to return"),
       },
       annotations: WRITE,
     },
@@ -434,7 +435,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         "Get messages with unread reactions on your posts in a Telegram chat. Marks all reactions as read on the server when all unread reactions fit within the requested limit.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        limit: z.number().default(20).describe("Max number of messages to return"),
+        limit: pageLimit(20).describe("Max number of messages to return"),
       },
       annotations: WRITE,
     },
@@ -748,7 +749,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       inputSchema: {
         chatId: z.string().describe("Channel or supergroup ID or username"),
         pts: z.number().int().describe("Last known per-channel pts"),
-        limit: z.number().int().positive().optional().describe("Max updates per batch (default 100)"),
+        limit: pageLimit(100, 1000).optional().describe("Max updates per batch (default 100)"),
         force: z
           .boolean()
           .optional()

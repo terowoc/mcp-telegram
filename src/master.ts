@@ -14,7 +14,9 @@ import {
 import { lockPath, releaseLock, releaseSocket, socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
 import { ToolExecutor } from "./tool-executor.js";
+import { ToolPolicy } from "./tool-policy.js";
 import { registerTools } from "./tools/index.js";
+import { ok } from "./tools/shared.js";
 
 const TOOL_CALL_TIMEOUT_MS = 28_000;
 const MAX_SOCKET_QUEUE = 64;
@@ -37,6 +39,15 @@ type ActiveLogin = { socket: Socket; abort: AbortController };
 type Dispatch = { lock: GlobalLock; executor: ToolExecutor; activeLogin: ActiveLogin | null };
 const dispatches = new WeakMap<McpServerInternal, Dispatch>();
 
+function diagnosticResult(dispatch: Dispatch, telegram: TelegramService) {
+  const status = {
+    owner: dispatch.executor.isSettling() ? "settling" : "ready",
+    telegram: telegram.diagnostics?.() ?? { connected: false },
+    executor: dispatch.executor.diagnostics(),
+  };
+  return ok(JSON.stringify(status), status);
+}
+
 export interface HandleClientOptions {
   toolCallTimeoutMs?: number;
   /** Production fail-stop: the supervisor replaces an owner with a stuck operation. */
@@ -47,6 +58,7 @@ function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, op
   const existing = dispatches.get(mcpServer);
   if (existing) return existing;
   const lock = new GlobalLock();
+  const policy = new ToolPolicy();
   // Snapshot original callbacks before owner stdio is wired through this same executor.
   const tools = Object.fromEntries(
     Object.entries(mcpServer._registeredTools).map(([name, tool]) => [name, { ...tool }]),
@@ -57,6 +69,13 @@ function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, op
     timeoutMs: opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS,
     onTimeout: (name) => telegram.markUnhealthy?.(`tool call timed out: ${name}`),
     onStuck: opts.onStuck,
+    authorize: async (name, args) => {
+      if (name === "telegram-logout") await telegram.cancelQrLogin?.();
+      return policy.authorize(name, args, async (id) => {
+        if (!(await telegram.ensureConnected())) throw new Error("Telegram is not connected");
+        return telegram.canonicalChatId(id);
+      });
+    },
   });
   const dispatch: Dispatch = { lock, executor, activeLogin: null };
   dispatches.set(mcpServer, dispatch);
@@ -72,6 +91,7 @@ export function wireOwnerExecutor(
   const dispatch = dispatchFor(mcpServer, telegram, opts);
   for (const [name, tool] of Object.entries(mcpServer._registeredTools)) {
     tool.handler = (args, extra) => {
+      if (name === "telegram-doctor") return Promise.resolve(diagnosticResult(dispatch, telegram));
       if (name === "telegram-logout") dispatch.activeLogin?.abort.abort();
       const context = extra ?? (tool.inputSchema ? {} : args);
       return dispatch.executor.call(name, tool.inputSchema ? args : {}, {
@@ -130,6 +150,10 @@ export function handleClient(
         continue;
       }
       if (msg.type !== "tool" && msg.type !== "login_start") continue;
+      if (msg.type === "tool" && msg.tool === "telegram-doctor") {
+        send(socket, { type: "tool_response", id: msg.id, result: diagnosticResult(dispatch, telegram) });
+        continue;
+      }
       if (requests.has(msg.id)) {
         socket.destroy();
         return;
@@ -231,6 +255,7 @@ export interface OwnerHandle {
   srv: Server;
   gracefulExit: () => Promise<void>;
   beforeShutdown?: () => Promise<void>;
+  executor: ToolExecutor;
 }
 
 /**
@@ -249,7 +274,7 @@ export async function startOwner(
   const server = new McpServer({ name: "mcp-telegram", version });
   registerTools(server, telegram);
   const mcpServer = server as unknown as McpServerInternal;
-  wireOwnerExecutor(mcpServer, telegram, {
+  const executor = wireOwnerExecutor(mcpServer, telegram, {
     onStuck: () => {
       console.error(`[${label}] Timed-out operation did not settle; terminating owner for safe recovery`);
       process.exit(1);
@@ -285,7 +310,7 @@ export async function startOwner(
   console.error(`[${label}] IPC socket ready: ${sock}`);
 
   let shuttingDown = false;
-  const handle: OwnerHandle = { server, srv, gracefulExit: async () => {} };
+  const handle: OwnerHandle = { server, srv, executor, gracefulExit: async () => {} };
   const gracefulExit = async () => {
     if (shuttingDown) return;
     shuttingDown = true;

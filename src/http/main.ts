@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { IpcClient } from "../client.js";
 import { tryAcquireLock } from "../lock.js";
-import { startOwner } from "../master.js";
+import { type OwnerHandle, startOwner } from "../master.js";
 import { TelegramService } from "../telegram-client.js";
 import { createHttpGateway } from "./gateway.js";
 
@@ -24,6 +24,7 @@ async function main() {
     throw new Error("Invalid owner password hash file");
   const { version } = createRequire(import.meta.url)("../../package.json") as { version: string };
   const ipc = new IpcClient();
+  let owner: OwnerHandle | undefined;
   // Validate and open auth storage before starting Telegram. Startup failure must not
   // strand a Telegram owner without a gateway.
   const gateway = await createHttpGateway({
@@ -33,15 +34,15 @@ async function main() {
     version,
     allowedOrigins: (process.env.MCP_ALLOWED_ORIGINS ?? "").split(",").filter(Boolean),
     trustProxy: 1,
-    isHealthy: () => ipc.isConnected(),
-    callTool: (name, args) => ipc.call(name, args),
+    isHealthy: () => ipc.isConnected() && owner?.executor.isSettling() === false,
+    callTool: (name, args, callOptions) => ipc.call(name, args, callOptions),
   });
   if (!tryAcquireLock()) {
     await gateway.close();
     throw new Error("Another Telegram owner already holds the lock");
   }
   const telegram = new TelegramService(apiId, apiHash);
-  const owner = await startOwner(telegram, version, { label: "http" });
+  owner = await startOwner(telegram, version, { label: "http" });
   if (!(await ipc.connect())) throw new Error("Unable to connect HTTP gateway to Telegram owner");
   ipc.setOnDisconnect(() => {
     console.error("[http] Owner disconnected");

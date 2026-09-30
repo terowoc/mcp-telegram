@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
 import { fail, formatReactions, ok, READ_ONLY, requireConnection, WRITE } from "./shared.js";
 
@@ -128,7 +129,7 @@ export function registerExtraTools(server: McpServer, telegram: TelegramService)
         "List forum topics in a Telegram group with Topics enabled. Shows topic names, unread counts, and status",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username of a group with Topics enabled"),
-        limit: z.number().default(100).describe("Max topics to return"),
+        limit: pageLimit(100).describe("Max topics to return"),
       },
       annotations: READ_ONLY,
     },
@@ -160,7 +161,7 @@ export function registerExtraTools(server: McpServer, telegram: TelegramService)
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         topicId: z.number().describe("Topic ID (get from telegram-list-topics)"),
-        limit: z.number().default(20).describe("Number of messages to return"),
+        limit: pageLimit(20).describe("Number of messages to return"),
         offsetId: z.number().optional().describe("Message ID to start from (for pagination)"),
       },
       annotations: READ_ONLY,

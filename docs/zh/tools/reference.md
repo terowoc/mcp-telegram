@@ -1,12 +1,13 @@
 # 工具参考
 
-Telegram MCP Server 提供按类别组织的 182 个工具。所有工具通过 MCP 自动发现。
+Telegram MCP Server 提供按类别组织的 185 个工具。所有工具通过 MCP 自动发现。
 
 ## 认证
 
 | 工具 | 说明 |
 | ------ | ------ |
 | `telegram-status` | 检查连接状态和账户信息 |
+| `telegram-doctor` | 查看不含消息、身份或密钥的运行状态与计数器 |
 | `telegram-login` | 生成认证二维码 |
 | `telegram-logout` | 撤销 Telegram 服务器上的会话并删除本地会话文件 |
 
@@ -15,6 +16,7 @@ Telegram MCP Server 提供按类别组织的 182 个工具。所有工具通过 
 | 工具 | 说明 |
 | ------ | ------ |
 | `telegram-send-message` | 发送消息到任何聊天（支持 `quoteText` 引用原消息片段，以及 Premium `effect` 动画特效） |
+| `telegram-prepare-message` | 校验目标和消息草稿，不发送消息 |
 | `telegram-edit-message` | 编辑已发送的消息 |
 | `telegram-delete-message` | 删除消息 |
 | `telegram-forward-message` | 转发消息 |
@@ -40,6 +42,7 @@ Telegram MCP Server 提供按类别组织的 182 个工具。所有工具通过 
 | `telegram-search-global` | 跨所有聊天搜索 |
 | `telegram-search-chats` | 按名称搜索聊天 |
 | `telegram-get-unread` | 获取有未读消息的聊天 |
+| `telegram-inbox` | 有限的未读聊天概览，包含近期消息与历史游标 |
 | `telegram-mark-as-read` | 标记为已读 |
 | `telegram-get-replies` | 读取频道帖子下的评论/回复 |
 | `telegram-get-unread-mentions` | 列出聊天中未读的 @ 提及（会在服务端标为已读） |

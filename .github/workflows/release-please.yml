@@ -2,8 +2,8 @@ name: Release Please
 
 # Maintains a rolling "Release PR" from Conventional Commits on main.
 # Merge that PR → release-please creates the git tag + GitHub Release,
-# which triggers publish.yml (on: release: published) to publish npm,
-# Docker, and standalone binaries. No manual version bump or changelog.
+# which calls publish.yml explicitly. Releases created with GITHUB_TOKEN do not
+# trigger a release-event workflow. Fork publishing remains guarded by repository identity.
 
 on:
   push:
@@ -18,11 +18,27 @@ jobs:
   release-please:
     if: github.repository == 'mcp-telegram/mcp-telegram'
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       # v5's only breaking change vs v4 is the bundled runtime (Node 20 → 24),
       # so the old FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 opt-in is no longer needed.
       # Config schema, inputs, and behavior are unchanged.
       - uses: googleapis/release-please-action@v5
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish:
+    if: github.repository == 'mcp-telegram/mcp-telegram' && needs.release-please.outputs.release_created == 'true'
+    needs: release-please
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets: inherit

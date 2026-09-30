@@ -1,5 +1,6 @@
 import { GlobalLock } from "./global-lock.js";
 import type { McpRegisteredTool } from "./ipc-protocol.js";
+import { MAX_TOOL_RESULT_BYTES } from "./limits.js";
 import { runOperation } from "./operation-context.js";
 
 export interface ExecutorOptions {
@@ -10,6 +11,7 @@ export interface ExecutorOptions {
   onTimeout?: (name: string) => void;
   onStuck?: () => void;
   settlementGraceMs?: number;
+  authorize?: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 export interface CallOptions {
   signal?: AbortSignal;
@@ -23,12 +25,24 @@ export class ToolExecutor {
   private settling = false;
   private timeoutMs: number;
   private maxResultBytes: number;
+  private counts = { requests: 0, completed: 0, failed: 0, timeouts: 0 };
   constructor(private options: ExecutorOptions) {
     this.lock = options.lock ?? new GlobalLock();
     this.timeoutMs = options.timeoutMs ?? 28000;
-    this.maxResultBytes = options.maxResultBytes ?? 4 * 1048576 - 1024;
+    this.maxResultBytes = options.maxResultBytes ?? MAX_TOOL_RESULT_BYTES;
   }
   async call(name: string, args: Record<string, unknown>, options: CallOptions = {}): Promise<unknown> {
+    this.counts.requests++;
+    try {
+      const result = await this.execute(name, args, options);
+      this.counts.completed++;
+      return result;
+    } catch (error) {
+      this.counts.failed++;
+      throw error;
+    }
+  }
+  private async execute(name: string, args: Record<string, unknown>, options: CallOptions): Promise<unknown> {
     if (this.settling) throw new Error("Telegram executor unavailable: previous operation is still settling");
     const tool = Object.hasOwn(this.options.tools, name) ? this.options.tools[name] : undefined;
     if (!tool || tool.enabled === false) throw new Error(`Unknown tool: ${name}`);
@@ -42,6 +56,7 @@ export class ToolExecutor {
     else options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(
       () => {
+        this.counts.timeouts++;
         controller.abort(new Error(`Tool call timed out after ${this.timeoutMs}ms: ${name}`));
         if (started) this.options.onTimeout?.(name);
       },
@@ -63,6 +78,8 @@ export class ToolExecutor {
           if (!parsed.success) throw new Error(`Invalid tool arguments: ${name}`);
           args = parsed.data as Record<string, unknown>;
         }
+        controller.signal.throwIfAborted();
+        if (this.options.authorize) args = await this.options.authorize(name, args);
         controller.signal.throwIfAborted();
         return tool.handler(args, { ...options.extra, signal: controller.signal });
       });
@@ -112,5 +129,8 @@ export class ToolExecutor {
   }
   queued(): number {
     return this.lock.waitingCount();
+  }
+  diagnostics() {
+    return { ...this.counts, queued: this.queued(), active: this.lock.isLocked(), settling: this.settling };
   }
 }

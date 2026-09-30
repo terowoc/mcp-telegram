@@ -6,6 +6,18 @@ import { DESTRUCTIVE, fail, ok, READ_ONLY, WRITE } from "./shared.js";
 
 export function registerAuthTools(server: McpServer, telegram: TelegramService) {
   server.registerTool(
+    "telegram-doctor",
+    {
+      description:
+        "Read operational health and counters without message content, account identity, credentials or paths. Available even while another operation is settling.",
+      annotations: READ_ONLY,
+    },
+    async () => {
+      const status = telegram.diagnostics();
+      return ok(JSON.stringify(status), status);
+    },
+  );
+  server.registerTool(
     "telegram-status",
     { description: "Check Telegram connection status", annotations: READ_ONLY },
     async () => {

@@ -1,12 +1,13 @@
 # Tools Reference
 
-Telegram MCP Server provides 182 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
+Telegram MCP Server provides 185 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
 
 ## Auth
 
 | Tool | Description |
 | ------ | ------------- |
 | `telegram-status` | Check connection status and get account info |
+| `telegram-doctor` | Redacted owner health, queue state and operational counters |
 | `telegram-login` | Generate QR code for authentication |
 | `telegram-logout` | Revoke session on Telegram and delete the local session file |
 
@@ -15,6 +16,7 @@ Telegram MCP Server provides 182 tools organized by category. All tools are auto
 | Tool | Description |
 | ------ | ------------- |
 | `telegram-send-message` | Send a message to any chat (user, group, channel) |
+| `telegram-prepare-message` | Resolve and validate a message draft without sending |
 | `telegram-edit-message` | Edit a previously sent message |
 | `telegram-delete-message` | Delete one or more messages |
 | `telegram-forward-message` | Forward messages between chats |
@@ -40,6 +42,7 @@ Telegram MCP Server provides 182 tools organized by category. All tools are auto
 | `telegram-search-global` | Search messages across all chats at once |
 | `telegram-search-chats` | Find chats by name or description |
 | `telegram-get-unread` | Get all chats with unread messages and counts |
+| `telegram-inbox` | Bounded unread-chat overview with recent messages and history cursors |
 | `telegram-mark-as-read` | Mark a chat as read |
 | `telegram-get-replies` | Read comments/replies under a channel post |
 | `telegram-get-unread-mentions` | List unread messages that mention you in a chat (marks them as read on the server) |
