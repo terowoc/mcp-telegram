@@ -10,7 +10,7 @@ License: GPL-3.0-or-later. See apps/web/LICENSE and apps/web/UPSTREAM.md.
 The separate server in the repository retains its MIT license.
 Use Node 24.15+ or Node 26 and npm 11+.
 
-npm --prefix apps/web ci
+npm --prefix apps/web ci --allow-git=all
 node scripts/build-web.mjs mocked
 
 For live chats, set WEB_TELEGRAM_API_ID and WEB_TELEGRAM_API_HASH to a

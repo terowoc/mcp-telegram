@@ -1,6 +1,6 @@
 import type { fork } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import express from "express";
 import { createHttpGateway } from "../http/gateway.js";
@@ -8,6 +8,7 @@ import { SaasAuth } from "./auth.js";
 import { createSaasIdentity } from "./identity.js";
 import { createSaasRoutes } from "./routes.js";
 import { loadVaultKey, SessionVault } from "./session-vault.js";
+import { mountSaasFrontend } from "./static.js";
 import { createSaasStore } from "./store.js";
 import { WorkerSupervisor } from "./supervisor.js";
 
@@ -22,6 +23,7 @@ export interface SaasConfig {
   maxUsers?: number;
   maxWorkers?: number;
   port?: number;
+  webRoot?: string;
 }
 function validate(config: SaasConfig): SaasConfig {
   const url = new URL(config.publicUrl);
@@ -29,6 +31,7 @@ function validate(config: SaasConfig): SaasConfig {
     throw new Error("MCP_PUBLIC_URL must be an HTTPS origin");
   for (const path of [config.authDir, config.sessionKeyFile, config.filesRoot])
     if (!isAbsolute(path)) throw new Error("SaaS storage paths must be absolute");
+  if (config.webRoot && !isAbsolute(config.webRoot)) throw new Error("Frontend root must be absolute");
   if (!Number.isSafeInteger(config.apiId) || config.apiId < 1 || !/^[a-fA-F0-9]{32}$/.test(config.apiHash))
     throw new Error("Invalid Telegram server credentials");
   if (!Number.isSafeInteger(config.maxUsers ?? 100) || (config.maxUsers ?? 100) < 1 || (config.maxUsers ?? 100) > 10000)
@@ -61,11 +64,18 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     maxUsers: Number(env.MCP_SAAS_MAX_USERS ?? 100),
     maxWorkers: Number(env.MCP_SAAS_MAX_WORKERS ?? 4),
     port: Number(env.MCP_HTTP_PORT ?? 3000),
+    webRoot: env.MCP_WEB_ROOT,
     version: env.npm_package_version ?? "1.43.1",
   });
 }
 export async function startSaas(config: SaasConfig, options: { spawn?: typeof fork } = {}) {
   validate(config);
+  const csp = config.webRoot
+    ? (await readFile(join(config.webRoot, "index.html"), "utf8")).match(
+        /<meta http-equiv="Content-Security-Policy" content="([^"\r\n]+)"/,
+      )?.[1]
+    : undefined;
+  if (config.webRoot && !csp) throw new Error("Frontend build has no CSP metadata");
   const key = await loadVaultKey(config.sessionKeyFile); // fail before any DB or process is opened
   const vault = new SessionVault(key);
   await mkdir(config.filesRoot, { recursive: true, mode: 0o700 });
@@ -115,6 +125,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     next();
   });
   app.use(gateway.app);
+  if (config.webRoot && csp) mountSaasFrontend(app, { root: config.webRoot, origin: config.publicUrl, csp });
   let closePromise: Promise<void> | undefined;
   const close = () => {
     if (closePromise) return closePromise;

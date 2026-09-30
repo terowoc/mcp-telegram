@@ -15,7 +15,7 @@ TG Bridge использует Telegram Web A: настоящие чаты, по
 Фронтенд требует Node 24.15+ или Node 26 и npm 11+. Серверные и браузерные реквизиты Telegram независимы. Значения `WEB_TELEGRAM_API_ID` и `WEB_TELEGRAM_API_HASH` будут публичными в браузерной сборке. Приватные серверные ключи туда не включаются.
 
 ```sh
-npm --prefix apps/web ci
+npm --prefix apps/web ci --allow-git=all
 npm run web:build:mocked
 npm run web:check
 npm run web:test -- --run

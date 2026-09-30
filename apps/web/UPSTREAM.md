@@ -12,7 +12,7 @@ TG Bridge adds a separate MCP account panel to the existing Telegram Web A chat 
 Use Node 24.15+ or Node 26 and npm 11 or 12:
 
 ```sh
-npm --prefix apps/web ci
+npm --prefix apps/web ci --allow-git=all
 npm run web:build:mocked
 npm run web:check
 # Explicit browser application credentials, separate from server credentials:
