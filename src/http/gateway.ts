@@ -305,6 +305,26 @@ export async function createHttpGateway(options: GatewayOptions) {
         },
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      const send = transport.send.bind(transport);
+      transport.send = async (message, sendOptions) => {
+        if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1048576) {
+          if ("id" in message) {
+            await send(
+              {
+                jsonrpc: "2.0",
+                id: message.id,
+                error: {
+                  code: -32000,
+                  message: "Response exceeds hosted output limit; narrow the request or use pagination",
+                },
+              },
+              sendOptions,
+            );
+          }
+          return;
+        }
+        await send(message, sendOptions);
+      };
       res.on("close", () => {
         void transport.close();
         void server.close();

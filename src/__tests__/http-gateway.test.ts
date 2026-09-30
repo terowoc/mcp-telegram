@@ -203,6 +203,21 @@ describe("authenticated HTTPS gateway contract", () => {
       }),
     });
     assert.equal(longId.status, 400);
+    const invalidAlbum = await request("/mcp", {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 22,
+        method: "tools/call",
+        params: { name: "telegram-send-album", arguments: { chatId: "test", items: Array(50000).fill(null) } },
+      }),
+    });
+    const validationBody = await invalidAlbum.text();
+    assert.ok(
+      Buffer.byteLength(validationBody) <= 2 * 1048576,
+      `validation response size: ${Buffer.byteLength(validationBody)}`,
+    );
     const call = await request("/mcp", {
       method: "POST",
       headers: mcpHeaders,
