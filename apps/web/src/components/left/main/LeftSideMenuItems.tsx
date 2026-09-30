@@ -51,6 +51,7 @@ type OwnProps = {
   onBotMenuOpened: NoneToVoidFunction;
   onBotMenuClosed: NoneToVoidFunction;
   footer?: string;
+  onSelectMcp: NoneToVoidFunction;
 };
 
 type StateProps = {
@@ -79,6 +80,7 @@ const LeftSideMenuItems = ({
   onBotMenuOpened,
   onBotMenuClosed,
   footer,
+  onSelectMcp,
 }: OwnProps & StateProps) => {
   const {
     openChat,
@@ -216,6 +218,9 @@ const LeftSideMenuItems = ({
         onClick={onSelectSettings}
       >
         {lang('MenuSettings')}
+      </MenuItem>
+      <MenuItem icon="link" onClick={onSelectMcp}>
+        {lang('McpMenu')}
       </MenuItem>
       <NestedMenuItem
         icon="more"

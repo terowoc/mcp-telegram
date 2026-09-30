@@ -64,7 +64,9 @@ class TelegramClient {
 
   async loadScenario(scenario = 'default'): Promise<void> {
     try {
-      const invokeMiddleware = await import(/* @vite-ignore */ `./__invokeMiddlewares__/${scenario}`);
+      const invokeMiddleware = scenario === 'mcp'
+        ? await import('./__invokeMiddlewares__/mcp')
+        : await import(/* @vite-ignore */ `./__invokeMiddlewares__/${scenario}`);
 
       this.invokeMiddleware = invokeMiddleware.default;
     } catch (e) {
@@ -93,16 +95,19 @@ class TelegramClient {
     return createMockedUser(id, this.mockData);
   }
 
+  setIsPremium(_isPremium: boolean) {}
+
   getDialogs(type: 'active' | 'archived' = 'active') {
     return this.mockData.dialogs[type].map((dialog) => createMockedDialog(dialog.id, this.mockData));
   }
 
-  start({
+  async start({
     mockScenario,
   }: {
     mockScenario: string;
-  }) {
-    return this.loadScenario(mockScenario);
+  }, onConnected?: NoneToVoidFunction) {
+    await this.loadScenario(mockScenario);
+    onConnected?.();
   }
 
   async invoke<A, R>(request: Api.Request<A, R>) {

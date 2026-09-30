@@ -73,6 +73,7 @@ export class WorkerSupervisor {
       state: slot?.state ?? "stopped",
       busy: !!slot?.pending.size,
       sessionPresent: !!this.options.store.getEncryptedSession(userId),
+      account: this.options.store.getTelegramAccount(userId),
     };
   }
   private acquire(userId: string, signal?: AbortSignal): Slot {
@@ -202,7 +203,15 @@ export class WorkerSupervisor {
     const pending = slot.pending.get(message.id);
     if (!pending) return;
     if (message.kind === "event") {
-      if (pending.attemptId === message.attemptId) pending.onEvent?.(message.event);
+      if (pending.attemptId === message.attemptId) {
+        try {
+          if (message.event.type === "success")
+            this.options.store.putTelegramAccount(slot.userId, message.event.account);
+          pending.onEvent?.(message.event);
+        } catch {
+          void this.stopSlot(slot);
+        }
+      }
       return;
     }
     if (message.kind === "settled") {

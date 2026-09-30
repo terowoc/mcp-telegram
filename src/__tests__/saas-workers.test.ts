@@ -60,6 +60,31 @@ function setup(options: { maxWorkers?: number; idleMs?: number; autoReady?: bool
   return { store, users, vault, children, supervisor };
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+test("a login success without saved session stops that worker without throwing in the gateway", async () => {
+  const s = setup();
+  try {
+    const user = s.users[1];
+    const events: unknown[] = [];
+    const login = s.supervisor.startLogin(user.id, "attempt", (event) => events.push(event)).catch((error) => error);
+    await waitFor(() => s.children[0]?.sent.some((message) => message.kind === "login-start") === true);
+    const request = s.children[0].sent.find((message) => message.kind === "login-start");
+    assert.ok(request && "id" in request);
+    assert.doesNotThrow(() =>
+      s.children[0].emit("message", {
+        kind: "event",
+        generation: request.generation,
+        id: request.id,
+        attemptId: "attempt",
+        event: { type: "success", account: { id: "111" } },
+      }),
+    );
+    assert.ok((await login) instanceof Error);
+    assert.deepEqual(events, []);
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
 async function waitFor(predicate: () => boolean) {
   const deadline = Date.now() + 2000;
   while (!predicate()) {

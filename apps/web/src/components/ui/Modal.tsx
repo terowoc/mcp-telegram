@@ -178,7 +178,7 @@ const Modal = (props: OwnProps) => {
     };
   }, [isNativeDialog, nativeDialogRef, shouldRender]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isNativeDialog || !shouldRender) {
       return undefined;
     }

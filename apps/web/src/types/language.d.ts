@@ -2438,6 +2438,80 @@ export interface LangPair {
   'RichButtonCenter': undefined;
   'RichButtonRight': undefined;
   'RichEditorButtonCopyText': undefined;
+  'McpTitle': undefined;
+  'McpMenu': undefined;
+  'McpFree': undefined;
+  'McpIntro': undefined;
+  'McpLogin': undefined;
+  'McpPassword': undefined;
+  'McpSignIn': undefined;
+  'McpRegister': undefined;
+  'McpRecover': undefined;
+  'McpRecoveryCode': undefined;
+  'McpNewPassword': undefined;
+  'McpPasswordHint': undefined;
+  'McpAccountNote': undefined;
+  'McpRecoveryTitle': undefined;
+  'McpRecoveryNote': undefined;
+  'McpRecoverySaved': undefined;
+  'McpTelegram': undefined;
+  'McpAccess': undefined;
+  'McpClients': undefined;
+  'McpConnect': undefined;
+  'McpAccount': undefined;
+  'McpBrowserAccount': undefined;
+  'McpServerAccount': undefined;
+  'McpNotConnected': undefined;
+  'McpSessionSaved': undefined;
+  'McpSeparateSessions': undefined;
+  'McpMismatch': undefined;
+  'McpLinkTelegram': undefined;
+  'McpRelinkTelegram': undefined;
+  'McpQrInstructions': undefined;
+  'McpQrAlt': undefined;
+  'McpWaiting': undefined;
+  'McpTwoFactor': undefined;
+  'McpTwoFactorNote': undefined;
+  'McpSubmitPassword': undefined;
+  'McpCancel': undefined;
+  'McpExpired': undefined;
+  'McpCancelled': undefined;
+  'McpLoginFailed': undefined;
+  'McpLoginSuccess': undefined;
+  'McpRead': undefined;
+  'McpFull': undefined;
+  'McpPolicyNote': undefined;
+  'McpChats': undefined;
+  'McpChatsHint': undefined;
+  'McpInvalidChats': undefined;
+  'McpSavePolicy': undefined;
+  'McpPolicyConfirm': undefined;
+  'McpConfirm': undefined;
+  'McpNoClients': undefined;
+  'McpRevoke': undefined;
+  'McpRevokeConfirm': undefined;
+  'McpUrl': undefined;
+  'McpCopyUrl': undefined;
+  'McpCopied': undefined;
+  'McpOAuthHelp': undefined;
+  'McpChatGptHelp': undefined;
+  'McpClaudeHelp': undefined;
+  'McpCodexHelp': undefined;
+  'McpNoTokenHelp': undefined;
+  'McpSignOut': undefined;
+  'McpDisconnect': undefined;
+  'McpDisconnectConfirm': undefined;
+  'McpDeleteAccount': undefined;
+  'McpDeleteConfirm': undefined;
+  'McpBack': undefined;
+  'McpSource': undefined;
+  'McpRequestFailed': undefined;
+  'McpAuthFailed': undefined;
+  'McpCapacity': undefined;
+  'McpRefresh': undefined;
+  'McpUnknownIdentity': undefined;
+  'McpLoading': undefined;
+  'McpRecovered': undefined;
 }
 
 export interface LangPairWithVariables<V = LangVariable> {
@@ -4198,6 +4272,12 @@ export interface LangPairWithVariables<V = LangVariable> {
   };
   'SettingsLanguageDesc': {
     'language': V;
+  };
+  'McpRetrySeconds': {
+    'seconds': V;
+  };
+  'McpUserLogin': {
+    'login': V;
   };
 }
 

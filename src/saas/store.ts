@@ -24,7 +24,8 @@ export class SaasStore {
     try {
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
       const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-      if (version.user_version > 1) throw new Error("Unsupported SaaS database version");
+      if (version.user_version > 2) throw new Error("Unsupported SaaS database version");
+      this.db.exec("BEGIN IMMEDIATE");
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS users (
           id TEXT PRIMARY KEY, login TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
@@ -37,13 +38,16 @@ export class SaasStore {
           csrf_hash TEXT NOT NULL, expires_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS browser_session_user ON browser_sessions(user_id);
         CREATE TABLE IF NOT EXISTS telegram_sessions (
-          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, envelope TEXT NOT NULL);
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, envelope TEXT NOT NULL, account_json TEXT);
         CREATE TABLE IF NOT EXISTS grant_bindings (
           grant_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           client_id TEXT NOT NULL, policy_version INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS grant_user ON grant_bindings(user_id);
-        PRAGMA user_version=1;
       `);
+      const columns = this.db.prepare("PRAGMA table_info(telegram_sessions)").all() as { name: string }[];
+      if (!columns.some((column) => column.name === "account_json"))
+        this.db.exec("ALTER TABLE telegram_sessions ADD COLUMN account_json TEXT");
+      this.db.exec("PRAGMA user_version=2; COMMIT;");
     } catch (error) {
       this.db.close();
       throw error;
@@ -160,13 +164,30 @@ export class SaasStore {
     this.active(userId);
     this.db
       .prepare(
-        "INSERT INTO telegram_sessions(user_id,envelope) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET envelope=excluded.envelope",
+        "INSERT INTO telegram_sessions(user_id,envelope) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET envelope=excluded.envelope, account_json=NULL",
       )
       .run(userId, envelope);
   }
 
   deleteEncryptedSession(userId: string): void {
     this.db.prepare("DELETE FROM telegram_sessions WHERE user_id=?").run(userId);
+  }
+
+  getTelegramAccount(userId: string): { id: string; username?: string } | undefined {
+    const row = this.db.prepare("SELECT account_json FROM telegram_sessions WHERE user_id=?").get(userId) as
+      | { account_json: string | null }
+      | undefined;
+    return row?.account_json ? JSON.parse(row.account_json) : undefined;
+  }
+
+  putTelegramAccount(userId: string, account: { id: string; username?: string }): void {
+    this.active(userId);
+    if (
+      !this.db
+        .prepare("UPDATE telegram_sessions SET account_json=? WHERE user_id=?")
+        .run(JSON.stringify(account), userId).changes
+    )
+      throw new Error("Telegram session required before saving identity");
   }
 
   updatePolicy(userId: string, policy: UserPolicy): number {

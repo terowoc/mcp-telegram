@@ -30,7 +30,12 @@ export interface SaasMe {
   user: { id: string; login: string };
   csrfToken: string;
   policy: UserPolicy;
-  telegram: { state: "stopped" | "starting" | "ready" | "stopping"; busy: boolean; sessionPresent: boolean };
+  telegram: {
+    state: "stopped" | "starting" | "ready" | "stopping";
+    busy: boolean;
+    sessionPresent: boolean;
+    account?: { id: string; username?: string };
+  };
   mcpUrl: string;
 }
 export interface SaasClient {

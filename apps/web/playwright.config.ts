@@ -6,13 +6,14 @@ const config: PlaywrightTestConfig = {
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   webServer: {
-    command: 'npm run build:mocked && serve -l 1235 dist',
+    command: 'node ../../scripts/build-web.mjs mocked && serve -l 1235 dist',
     port: 1235,
     timeout: 120 * 1000,
     reuseExistingServer: !process.env.CI,
   },
   use: {
     baseURL: 'http://localhost:1235/',
+    actionTimeout: 10000,
     video: 'retain-on-failure',
     trace: 'on-first-retry',
   },

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { createSaasStore } from "../saas/store.js";
 
@@ -84,5 +85,53 @@ test("disabled accounts still occupy capacity until their records are purged", (
     assert.throws(() => store.register("bobby", "hash", []), /capacity/i);
   } finally {
     store.close();
+  }
+});
+
+test("saved Telegram identity persists per user and clears when the device session changes", () => {
+  const store = createSaasStore(":memory:");
+  try {
+    const a = store.register("alice", "hash", []),
+      b = store.register("bob", "hash", []);
+    assert.throws(() => store.putTelegramAccount(a.id, { id: "111", username: "alice" }));
+    store.putEncryptedSession(a.id, "encrypted-A");
+    store.putTelegramAccount(a.id, { id: "111", username: "alice" });
+    assert.deepEqual(store.getTelegramAccount(a.id), { id: "111", username: "alice" });
+    assert.equal(store.getTelegramAccount(b.id), undefined);
+    store.putEncryptedSession(a.id, "new-device");
+    assert.equal(store.getTelegramAccount(a.id), undefined);
+    store.putTelegramAccount(a.id, { id: "222" });
+    store.deleteEncryptedSession(a.id);
+    assert.equal(store.getTelegramAccount(a.id), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test("identity metadata migrates a v1 database and survives reopening with its encrypted session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "saas-identity-"));
+  const path = join(dir, "saas.sqlite");
+  try {
+    const initial = createSaasStore(path);
+    const user = initial.register("alice", "hash", []);
+    initial.putEncryptedSession(user.id, "unchanged-envelope");
+    initial.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec("ALTER TABLE telegram_sessions DROP COLUMN account_json; PRAGMA user_version=1;");
+    legacy.close();
+    const migrated = createSaasStore(path);
+    assert.equal(migrated.getEncryptedSession(user.id), "unchanged-envelope");
+    assert.equal(migrated.getTelegramAccount(user.id), undefined);
+    migrated.putTelegramAccount(user.id, { id: "123", username: "alice" });
+    migrated.close();
+    const reopened = createSaasStore(path);
+    try {
+      assert.deepEqual(reopened.getTelegramAccount(user.id), { id: "123", username: "alice" });
+      assert.equal(reopened.getEncryptedSession(user.id), "unchanged-envelope");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

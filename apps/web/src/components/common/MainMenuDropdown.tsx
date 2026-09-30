@@ -1,14 +1,11 @@
 import { type FC, memo } from '@teact';
 import { APP_REVISION } from 'virtual:git-info';
-import { getActions } from '../../global';
+import { getActions, withGlobal } from '../../global';
 
 import { LeftColumnContent, SettingsScreens } from '../../types';
 
-import {
-  APP_NAME,
-  DEBUG,
-  IS_BETA,
-} from '../../config';
+import { APP_NAME, DEBUG, IS_BETA } from '../../config';
+import { requestMutation } from '../../lib/fasterdom/fasterdom';
 import buildClassName from '../../util/buildClassName';
 
 import useFlag from '../../hooks/useFlag';
@@ -17,6 +14,7 @@ import useLastCallback from '../../hooks/useLastCallback';
 import useLeftHeaderButtonRtlForumTransition from '../left/main/hooks/useLeftHeaderButtonRtlForumTransition';
 
 import LeftSideMenuItems from '../left/main/LeftSideMenuItems';
+import McpPanelAsync from '../mcp/McpPanel.async';
 import DropdownMenu from '../ui/DropdownMenu';
 
 type OwnProps = {
@@ -25,24 +23,36 @@ type OwnProps = {
   className?: string;
 };
 
+type StateProps = { browserTelegramId?: string };
+
 const LeftSideMenuDropdown = ({
   trigger,
   shouldHideSearch,
   className,
-}: OwnProps) => {
-  const {
-    openLeftColumnContent, closeForumPanel, closeCommunityPanel, openSettingsScreen,
-  } = getActions();
+  browserTelegramId,
+}: OwnProps & StateProps) => {
+  const { openLeftColumnContent, closeForumPanel, closeCommunityPanel, openSettingsScreen } = getActions();
   const [isBotMenuOpen, markBotMenuOpen, unmarkBotMenuOpen] = useFlag();
+  const [isMcpOpen, openMcp, closeMcp] = useFlag();
   const lang = useLang();
 
-  const versionString = IS_BETA ? `${APP_VERSION} Beta (${APP_REVISION})` : (DEBUG ? APP_REVISION : APP_VERSION);
+  const versionString = IS_BETA
+    ? `${APP_VERSION} Beta (${APP_REVISION})`
+    : DEBUG
+      ? APP_REVISION
+      : APP_VERSION;
 
   // Disable dropdown menu RTL animation for resize
-  const {
-    shouldDisableDropdownMenuTransitionRef,
-    handleDropdownMenuTransitionEnd,
-  } = useLeftHeaderButtonRtlForumTransition(shouldHideSearch);
+  const { shouldDisableDropdownMenuTransitionRef, handleDropdownMenuTransitionEnd } =
+    useLeftHeaderButtonRtlForumTransition(shouldHideSearch);
+
+  const handleSelectMcp = useLastCallback(() => {
+    const triggerButton = document.querySelector<HTMLElement>('.DropdownMenu.main-menu > button');
+    requestMutation(() => {
+      triggerButton?.focus();
+      openMcp();
+    });
+  });
 
   const handleSelectSettings = useLastCallback(() => {
     openSettingsScreen({ screen: SettingsScreens.Main });
@@ -59,32 +69,42 @@ const LeftSideMenuDropdown = ({
   });
 
   return (
-    <DropdownMenu
-      trigger={trigger}
-      className={buildClassName(
-        'main-menu',
-        lang.isRtl && 'rtl',
-        shouldHideSearch && lang.isRtl && 'right-aligned',
-        shouldDisableDropdownMenuTransitionRef.current && lang.isRtl && 'disable-transition',
-        className,
-      )}
-      forceOpen={isBotMenuOpen}
-      positionX={shouldHideSearch && lang.isRtl ? 'right' : 'left'}
-      transformOriginX={90}
-      transformOriginY={100}
-      withPortal
-      onTransitionEnd={lang.isRtl ? handleDropdownMenuTransitionEnd : undefined}
-    >
-      <LeftSideMenuItems
-        onSelectArchived={handleSelectArchived}
-        onSelectContacts={handleSelectContacts}
-        onSelectSettings={handleSelectSettings}
-        onBotMenuOpened={markBotMenuOpen}
-        onBotMenuClosed={unmarkBotMenuOpen}
-        footer={`${APP_NAME} ${versionString}`}
-      />
-    </DropdownMenu>
+    <>
+      <DropdownMenu
+        trigger={trigger}
+        className={buildClassName(
+          'main-menu',
+          lang.isRtl && 'rtl',
+          shouldHideSearch && lang.isRtl && 'right-aligned',
+          shouldDisableDropdownMenuTransitionRef.current && lang.isRtl && 'disable-transition',
+          className,
+        )}
+        forceOpen={isBotMenuOpen}
+        positionX={shouldHideSearch && lang.isRtl ? 'right' : 'left'}
+        transformOriginX={90}
+        transformOriginY={100}
+        withPortal
+        onTransitionEnd={lang.isRtl ? handleDropdownMenuTransitionEnd : undefined}
+      >
+        <LeftSideMenuItems
+          onSelectArchived={handleSelectArchived}
+          onSelectContacts={handleSelectContacts}
+          onSelectSettings={handleSelectSettings}
+          onBotMenuOpened={markBotMenuOpen}
+          onBotMenuClosed={unmarkBotMenuOpen}
+          footer={`${APP_NAME} ${versionString}`}
+          onSelectMcp={handleSelectMcp}
+        />
+      </DropdownMenu>
+      <McpPanelAsync isOpen={isMcpOpen} browserTelegramId={browserTelegramId} onClose={closeMcp} />
+    </>
   );
 };
 
-export default memo(LeftSideMenuDropdown);
+export default memo(
+  withGlobal<OwnProps>(
+    (global): Complete<StateProps> => ({
+      browserTelegramId: global.currentUserId,
+    }),
+  )(LeftSideMenuDropdown),
+);
