@@ -46,8 +46,8 @@
     "web:dev": "node scripts/build-web.mjs dev",
     "web:dev:mocked": "node scripts/build-web.mjs dev:mocked",
     "web:check": "npm --prefix apps/web run check",
-    "web:test": "npm --prefix apps/web run test",
-    "web:test:playwright": "npm --prefix apps/web run test:playwright"
+    "web:test": "npm --prefix apps/web run test --",
+    "web:test:playwright": "npm --prefix apps/web run test:playwright --"
   },
   "keywords": [
     "mcp",

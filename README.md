@@ -16,6 +16,16 @@
 
 **Telegram MCP Server** — a Model Context Protocol server that connects AI assistants like Claude and ChatGPT to Telegram via the MTProto protocol. Unlike bots, this runs as a **userbot** -- it operates under your personal Telegram account using [GramJS](https://github.com/nicedoc/gramjs), giving full access to your chats, contacts, and message history.
 
+## TG Bridge: free SaaS and Telegram Web A
+
+This fork includes a pinned GPL Telegram Web A frontend with real browser chats and a separate MCP account panel. Public registration creates isolated accounts with encrypted server device sessions, per-user permissions, OAuth grants and bounded workers. Browser Telegram authorization stays in Web A; MCP has its own QR/2FA device login.
+
+- [Frontend build and account setup](docs/guides/web-a.md)
+- [SaaS API and storage](docs/guides/saas.md)
+- [Scoped production deployment and coherent rollback](docs/guides/saas-deployment.md)
+
+The complete image runs `saas`. Existing stdio, daemon, login and single-owner HTTP CLI modes remain available. Frontend builds require explicit public browser-app credentials; private server credentials are never embedded. Public hosting is enabled only after those inputs and the operator's initial key provisioning are complete.
+
 ## Features
 
 - **Comprehensive tool coverage** -- the most full-featured Telegram MCP server available

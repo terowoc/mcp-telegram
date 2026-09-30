@@ -79,7 +79,7 @@ async function setup() {
     headers: { origin, "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(data),
   });
-  async function authorize(login: string) {
+  async function authorize(login: string, beforeConsent?: () => void) {
     const request = jars();
     const registered = await request("/oauth/reg", {
       method: "POST",
@@ -127,7 +127,19 @@ async function setup() {
         assert.equal(html.includes("<script>alert(1)</script>"), false);
         const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
         assert.ok(csrf);
-        response = await request(target.pathname, form({ csrf, login, password, approve: "yes" }));
+        if (beforeConsent && html.includes(">Разрешить доступ</button>")) {
+          beforeConsent();
+          beforeConsent = undefined;
+          const stale = await request(target.pathname, form({ csrf, approve: "yes" }));
+          assert.equal(stale.status, 403, "Stale displayed policy cannot grant new permissions");
+          const updated = await request(target.pathname);
+          const freshHtml = await updated.text();
+          assert.match(freshHtml, /Чтение и изменение/);
+          const freshCsrf = /name="csrf" value="([^"]+)"/.exec(freshHtml)?.[1];
+          assert.ok(freshCsrf);
+          assert.notEqual(freshCsrf, csrf);
+          response = await request(target.pathname, form({ csrf: freshCsrf, approve: "yes" }));
+        } else response = await request(target.pathname, form({ csrf, login, password, approve: "yes" }));
       }
     }
     throw new Error("OAuth did not complete");
@@ -277,6 +289,18 @@ test("old owner grant never becomes a guest grant when switching to SaaS", async
     assert.equal(refreshed.status, 400);
     assert.equal((await refreshed.json()).error, "invalid_grant");
     assert.equal(s.calls.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a policy changed after the consent page requires a fresh displayed consent", async () => {
+  const s = await setup();
+  try {
+    await s.authorize("alice", () =>
+      s.store.updatePolicy(s.alice.userId, { profile: "full", chatIds: [], version: 0 }),
+    );
+    assert.equal(s.store.listGrants(s.alice.userId).length, 1);
   } finally {
     await s.close();
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
@@ -45,6 +46,48 @@ test("server secrets are excluded from frontend build environment", async () => 
   });
   assert.match(output, /TG Bridge/);
   assert.equal(output.includes("1".repeat(32)), false);
+});
+
+test("Vite does not reload local dotenv files after frontend environment isolation", {
+  skip: !existsSync("apps/web/node_modules/vite/dist/node/index.js"),
+}, async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join, resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const { frontendBuildEnv } = await import("../../scripts/build-web.mjs");
+  const root = await mkdtemp(join(tmpdir(), "web-env-"));
+  try {
+    await writeFile(
+      join(root, ".env"),
+      "TG_PRIVATE_FIXTURE=SERVER_SECRET_SENTINEL\nTEST_SESSION=PRIVATE_CLOUD_PASSWORD\n",
+    );
+    const configUrl = pathToFileURL(resolve("apps/web/vite.config.ts")).href;
+    const viteUrl = pathToFileURL(resolve("apps/web/node_modules/vite/dist/node/index.js")).href;
+    const result = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        import.meta.resolve("tsx"),
+        "--input-type=module",
+        "-e",
+        `const {resolveConfig}=await import(${JSON.stringify(viteUrl)});const {default:config}=await import(${JSON.stringify(configUrl)});const resolved=await resolveConfig({...config({mode:'production',command:'build'}),configFile:false},'build','production');console.log(JSON.stringify(resolved.env));`,
+      ],
+      {
+        cwd: root,
+        env: frontendBuildEnv("production", {
+          PATH: process.env.PATH,
+          WEB_TELEGRAM_API_ID: "123",
+          WEB_TELEGRAM_API_HASH: "1".repeat(32),
+        }),
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.includes("SERVER_SECRET_SENTINEL"), false);
+    assert.equal(result.includes("PRIVATE_CLOUD_PASSWORD"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("worker bypasses SaaS OAuth MCP and discovery before HTML caching", async () => {

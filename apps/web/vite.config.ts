@@ -4,7 +4,7 @@ import type { NormalizedOutputOptions, OutputBundle, PluginContext } from 'rolld
 import { bundleStats } from 'rollup-plugin-bundle-stats';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { fileURLToPath } from 'url';
-import { defineConfig, loadEnv, normalizePath, type Plugin, type PluginOption, type UserConfig } from 'vite';
+import { defineConfig, normalizePath, type Plugin, type PluginOption, type UserConfig } from 'vite';
 import { type Target, viteStaticCopy } from 'vite-plugin-static-copy';
 import { watchAndRun } from 'vite-plugin-watch-and-run';
 
@@ -66,7 +66,9 @@ type BundleReportHook = (
 ) => void | Promise<void>;
 
 export default defineConfig(({ mode }): UserConfig => {
-  const env = loadEnv(mode, process.cwd(), '');
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => (
+    entry[1] !== undefined
+  )));
   setViteEnv(env);
   const {
     HEAD = '',
@@ -192,6 +194,7 @@ export default defineConfig(({ mode }): UserConfig => {
 
   return {
     base: './',
+    envDir: false,
     envPrefix: ['VITE_', 'TG_'],
     assetsInclude: ['**/*.tgs'],
     optimizeDeps: {

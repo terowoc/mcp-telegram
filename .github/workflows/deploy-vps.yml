@@ -24,6 +24,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm --prefix apps/web ci --allow-git=all
+      - run: npx tsx --test src/__tests__/web-package.test.ts
       - run: npm run web:check
       - run: npm run web:test -- --run
       - run: npm run web:build:mocked

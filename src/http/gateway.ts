@@ -188,8 +188,10 @@ export async function createHttpGateway(options: GatewayOptions) {
   );
   app.use("/oauth/reg", rateLimit({ windowMs: 3600000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false }));
   app.use("/oauth", rateLimit({ windowMs: 60000, limit: 120, standardHeaders: "draft-8", legacyHeaders: false }));
-  const csrfFor = (uid: string, prompt: string) =>
-    createHmac("sha256", secrets.cookieKeys[0]).update(`${uid}:${prompt}`).digest("hex");
+  const csrfFor = (uid: string, prompt: string, accountId?: string) =>
+    createHmac("sha256", secrets.cookieKeys[0])
+      .update(`${uid}:${prompt}:${prompt === "consent" ? (identity.consentBinding?.(accountId) ?? "") : ""}`)
+      .digest("hex");
   app.get("/interaction/:uid", async (req, res) => {
     const interaction = await provider.interactionDetails(req, res);
     if (req.params.uid !== interaction.uid) {
@@ -201,7 +203,7 @@ export async function createHttpGateway(options: GatewayOptions) {
     res
       .type("html")
       .send(
-        `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: ${escapeHtml(identity.describeAccess(interaction.session?.accountId))}</p><form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${csrfFor(interaction.uid, prompt)}">${prompt === "login" ? `${identity.kind === "saas" ? '<label>Логин TG Bridge<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль TG Bridge" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>` : ""}<button name="approve" value="yes">${prompt === "login" ? "Войти" : "Разрешить доступ"}</button> <button name="approve" value="no">Отказать</button></form></html>`,
+        `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: ${escapeHtml(identity.describeAccess(interaction.session?.accountId))}</p><form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${csrfFor(interaction.uid, prompt, interaction.session?.accountId)}">${prompt === "login" ? `${identity.kind === "saas" ? '<label>Логин TG Bridge<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль TG Bridge" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>` : ""}<button name="approve" value="yes">${prompt === "login" ? "Войти" : "Разрешить доступ"}</button> <button name="approve" value="no">Отказать</button></form></html>`,
       );
   });
   app.post(
@@ -217,9 +219,14 @@ export async function createHttpGateway(options: GatewayOptions) {
       if (
         req.params.uid !== interaction.uid ||
         typeof req.body.csrf !== "string" ||
-        !equal(req.body.csrf, csrfFor(interaction.uid, interaction.prompt.name))
+        !equal(req.body.csrf, csrfFor(interaction.uid, interaction.prompt.name, interaction.session?.accountId))
       ) {
-        res.sendStatus(403);
+        res
+          .status(403)
+          .type("html")
+          .send(
+            `<!doctype html><html lang="ru"><title>Обновите подтверждение</title><p>Подтверждение устарело. Проверьте актуальные права перед подключением клиента.</p><a href="/interaction/${escapeHtml(interaction.uid)}">Вернуться к подтверждению</a></html>`,
+          );
         return;
       }
       if (req.body.approve !== "yes") {

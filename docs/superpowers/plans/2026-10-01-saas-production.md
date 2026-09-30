@@ -35,7 +35,7 @@
 
 **Interfaces:** `mountSaasFrontend(app:express.Express, {root:string,origin:string,csp:string}):void`; runs after explicit API/OAuth/MCP/discovery routes, static files served from `/app/web`. Build arguments `WEB_TELEGRAM_API_ID`, `WEB_TELEGRAM_API_HASH`; never pass server env/key file into frontend builder.
 
-- [ ] **Step 1:** Write failing HTTP tests `reserved_routes_are_never_spa_fallback`, `assets_and_source_archive_are_available`, `csp_separates_frontend_and_oauth`, `anonymous_frontend_does_not_reveal_owner`. Assert 401 API/MCP stays JSON; unknown reserved route404; root serves branded Web A; account/QR responses remain no-store.
+- [x] **Step 1:** Write failing HTTP tests `reserved_routes_are_never_spa_fallback`, `assets_and_source_archive_are_available`, `csp_separates_frontend_and_oauth`, `anonymous_frontend_does_not_reveal_owner`. Assert 401 API/MCP stays JSON; unknown reserved route404; root serves branded Web A; account/QR responses remain no-store.
 
 ```ts
 assert.equal(unauthorizedMcp.status, 401);
@@ -44,10 +44,10 @@ assert.equal(unknownSaasRoute.status, 404);
 assert.match(homeHtml, /TG Bridge/);
 assert.match(qrResponse.headers.get('cache-control'), /no-store/);
 ```
-- [ ] **Step 2:** Run targeted tests; observe red.
-- [ ] **Step 3:** Add frontend builder with own lockfile and source packaging, supported Node/npm version, explicit app inputs. Copy built assets/source/license into non-root runtime; preserve backend-only commands. Add CI web mocked build/check/tests and Playwright fixtures; production build requires explicit frontend app credentials configured for distribution. Keep PR jobs free of deployment secrets. Forward pinned output CSP per response route, preserve existing auth strict CSP; immutable fingerprinted assets may cache, index/auth/API may not.
-- [ ] **Step 4:** Run backend/web tests, types/lint/docs, build Docker with synthetic frontend credential fixtures and fake Telegram backend env; HTTP smoke checks routes/assets/CSP/health. Verify private secret sentinel is absent in image/frontend archive. Expect all checks pass.
-- [ ] **Step 5:** Commit `feat: build and serve the complete free SaaS image`.
+- [x] **Step 2:** Run targeted tests; observe red.
+- [x] **Step 3:** Add frontend builder with own lockfile and source packaging, supported Node/npm version, explicit app inputs. Copy built assets/source/license into non-root runtime; preserve backend-only commands. Add CI web mocked build/check/tests and Playwright fixtures; production build requires explicit frontend app credentials configured for distribution. Keep PR jobs free of deployment secrets. Forward pinned output CSP per response route, preserve existing auth strict CSP; immutable fingerprinted assets may cache, index/auth/API may not.
+- [x] **Step 4:** Run backend/web tests, types/lint/docs, build Docker with synthetic frontend credential fixtures and fake Telegram backend env; HTTP smoke checks routes/assets/CSP/health. Verify private secret sentinel is absent in image/frontend archive. Expect all checks pass.
+- [x] **Step 5:** Commit `feat: build and serve the complete free SaaS image`.
 
 ### Task 2: Scoped Compose, coherent rollback and deployment verification
 
@@ -55,7 +55,7 @@ assert.match(qrResponse.headers.get('cache-control'), /no-store/);
 
 **Interfaces:** Compose runs `saas`, existing auth root includes `oauth.sqlite` and `saas.sqlite`; separate readonly `/run/secrets/session-key` (0600 source), user files volume. `MCP_SESSION_KEY_FILE` points to mounted private key. Graceful close terminates all workers before container stops. Snapshot entire `data/auth` under deployment lock; restore only after replacement is stopped. Image reference remains ghcr.io/terowoc/mcp-telegram@sha256.
 
-- [ ] **Step 1:** Write failing tests `snapshot_waits_for_all_workers`, `rollback_restores_matching_user_and_oauth_state`, `encryption_key_is_not_replaced_on_deploy`, `worker_capacity_preserves_http_health`; assert no write occurs during copy, unhealthy replacement restores previous coherent DBs, key identity unchanged and no global Docker mutations.
+- [x] **Step 1:** Write failing tests `snapshot_waits_for_all_workers`, `rollback_restores_matching_user_and_oauth_state`, `encryption_key_is_not_replaced_on_deploy`, `worker_capacity_preserves_http_health`; assert no write occurs during copy, unhealthy replacement restores previous coherent DBs, key identity unchanged and no global Docker mutations.
 
 ```ts
 assert.ok(events.indexOf('last-worker-exit') < events.indexOf('snapshot-start'));
@@ -64,10 +64,10 @@ assert.equal(restoredOAuthDbVersion, previousOAuthDbVersion);
 assert.equal(keyFingerprintAfter, keyFingerprintBefore);
 assert.equal(healthAtCapacity.status, 200);
 ```
-- [ ] **Step 2:** Run deploy/main test files; observe red.
-- [ ] **Step 3:** Set default total container memory 3 GiB/CPU1/PIDs128 (4 workers + control), graceful timeout45s with supervisor bounded cleanup; validate actual available VPS resources before applying and reduce maxWorkers/memory if the measured headroom is insufficient. Validate key/config before stopping previous image. Add isolated first-run initialization (master key generation/private backup, no owner grant migration), avoid destructive schema migrations during normal deploy, document schema-version rollback requirement. Compose rollback must restore previous configuration as well as DB/image when changing single-owner→SaaS mode; keep versioned release config and immutable previous pointer.
-- [ ] **Step 4:** Run synthetic Docker/Compose rollback probe with no real users, including cancellation/worker shutdown and failed migration. Check no unrelated container IDs change, target returns healthy, original key reads persisted sessions. Preflight native production verifies current deploy baseline and memory headroom before any mutation.
-- [ ] **Step 5:** Commit `feat: deploy SaaS with coherent worker-aware rollback`.
+- [x] **Step 2:** Run deploy/main test files; observe red.
+- [x] **Step 3:** Set default total container memory 3 GiB/CPU1/PIDs128 (4 workers + control), graceful timeout45s with supervisor bounded cleanup; validate actual available VPS resources before applying and reduce maxWorkers/memory if the measured headroom is insufficient. Validate key/config before stopping previous image. Add isolated first-run initialization (master key generation/private backup, no owner grant migration), avoid destructive schema migrations during normal deploy, document schema-version rollback requirement. Compose rollback must restore previous configuration as well as DB/image when changing single-owner→SaaS mode; keep versioned release config and immutable previous pointer.
+- [x] **Step 4:** Run synthetic Docker/Compose rollback probe with no real users, including cancellation/worker shutdown and failed migration. Check no unrelated container IDs change, target returns healthy, original key reads persisted sessions. Preflight native production verifies current deploy baseline and memory headroom before any mutation.
+- [x] **Step 5:** Commit `feat: deploy SaaS with coherent worker-aware rollback`.
 
 ### Task 3: Final review, integration and live handoff
 

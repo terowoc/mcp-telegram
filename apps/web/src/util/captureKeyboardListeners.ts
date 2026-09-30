@@ -11,6 +11,8 @@ type HandlerName =
   | 'onSpace';
 type Handler = (e: KeyboardEvent) => void | boolean;
 type CaptureOptions = Partial<Record<HandlerName, Handler>>;
+type HandlerEntry = { handler: Handler; isHighPriority?: boolean };
+const PRIORITY_ORDER = [true, false];
 
 const keyToHandlerName: Record<string, HandlerName> = {
   Enter: 'onEnter',
@@ -26,7 +28,7 @@ const keyToHandlerName: Record<string, HandlerName> = {
   ' ': 'onSpace',
 };
 
-const handlers: Record<HandlerName, Handler[]> = {
+const handlers: Record<HandlerName, HandlerEntry[]> = {
   onEnter: [],
   onDelete: [],
   onBackspace: [],
@@ -39,7 +41,7 @@ const handlers: Record<HandlerName, Handler[]> = {
   onSpace: [],
 };
 
-export default function captureKeyboardListeners(options: CaptureOptions) {
+export default function captureKeyboardListeners(options: CaptureOptions, isHighPriority?: boolean) {
   if (!hasActiveHandlers()) {
     document.addEventListener('keydown', handleKeyDown, true);
   }
@@ -52,12 +54,12 @@ export default function captureKeyboardListeners(options: CaptureOptions) {
 
     const currentEventHandlers = handlers[handlerName];
     if (currentEventHandlers) {
-      currentEventHandlers.push(handler);
+      currentEventHandlers.push({ handler, isHighPriority });
     }
   });
 
   return () => {
-    releaseKeyboardListener(options);
+    releaseKeyboardListener(options, isHighPriority);
   };
 }
 
@@ -85,21 +87,26 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  for (let i = length - 1; i >= 0; i--) {
-    const handler = handlers[handlerName][i];
-    if (handler(e) !== false) {
-      e.stopPropagation();
-      break;
+  for (const isHighPriority of PRIORITY_ORDER) {
+    for (let i = length - 1; i >= 0; i--) {
+      const entry = handlers[handlerName][i];
+      if (Boolean(entry.isHighPriority) !== isHighPriority) continue;
+      if (entry.handler(e) !== false) {
+        e.stopPropagation();
+        return;
+      }
     }
   }
 }
 
-function releaseKeyboardListener(options: CaptureOptions) {
+function releaseKeyboardListener(options: CaptureOptions, isHighPriority?: boolean) {
   (Object.keys(options) as Array<HandlerName>).forEach((handlerName) => {
     const handler = options[handlerName];
     const currentEventHandlers = handlers[handlerName];
     if (currentEventHandlers) {
-      const index = currentEventHandlers.findIndex((cb) => cb === handler);
+      const index = currentEventHandlers.findIndex(
+        (entry) => entry.handler === handler && entry.isHighPriority === isHighPriority,
+      );
       if (index !== -1) {
         currentEventHandlers.splice(index, 1);
       }

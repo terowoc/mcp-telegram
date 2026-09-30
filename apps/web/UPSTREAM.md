@@ -19,7 +19,7 @@ npm run web:check
 WEB_TELEGRAM_API_ID=your_browser_app_id WEB_TELEGRAM_API_HASH=your_browser_app_hash npm run web:build
 ```
 
-The root builder copies only explicit frontend inputs to the isolated frontend process. Server TELEGRAM_API_*, 2FA passwords, vault paths and MCP credentials are not forwarded. Never run the upstream auto-push release script. Local .env files, dependencies, caches, checked-in dist and Tauri build outputs are excluded from this fork import.
+The root builder copies only explicit frontend inputs to the isolated frontend process. Vite does not load local dotenv files. Server TELEGRAM_API_*, 2FA passwords, vault paths and MCP credentials are not forwarded. Never run the upstream auto-push release script. Local .env files, dependencies, caches, checked-in dist and Tauri build outputs are excluded from this fork import.
 
 Corresponding source: https://github.com/terowoc/mcp-telegram/tree/main/apps/web
 A release source archive with the build scripts and lockfile is distributed with the frontend.
@@ -38,7 +38,7 @@ To update upstream, record a new exact commit here, preserve the lockfile and li
 - `index.html`, public manifests/marks, `vite.config.ts`, `package.json`, `package-lock.json`, `.env.example`: branding and explicit isolated build.
 - `src/components/{common/MainMenuDropdown,left/main/LeftSideMenuItems}.tsx`, `src/bundles/extra.ts`: lazy MCP menu/panel.
 - `src/components/mcp/`, localization fallback and generated language types: SaaS authentication, independent QR device, grants, rights and client help.
-- `src/components/ui/Modal.tsx`: native cancel listener is installed before painted dialog accepts keyboard input.
+- `src/components/ui/Modal.tsx`, `src/util/captureKeyboardListeners.ts`: native dialog keyboard/cancel listeners are installed before paint and take priority over background handlers.
 - `src/serviceWorker/{saasCache,service.worker}.ts`: private-route cache bypass.
 - `src/lib/gramjs/client/MockClient.ts`, synthetic mcp scenario/middleware, `tests/`: offline acceptance harness.
 - `SOURCE_FILES.json`: exact distribution inventory; root `scripts/{build-web,package-web-source}.mjs`: reproducible build/archive entrypoints.

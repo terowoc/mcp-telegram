@@ -17,6 +17,7 @@ export interface GatewayIdentity {
     options?: { signal?: AbortSignal },
   ): Promise<unknown>;
   describeAccess(accountId?: string): string;
+  consentBinding?(accountId?: string): string;
 }
 export function ownerIdentity(options: {
   ownerPasswordHash: string;

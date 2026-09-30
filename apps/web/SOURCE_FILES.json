@@ -2839,6 +2839,7 @@
   "apps/web/src/util/SortedQueue.ts",
   "apps/web/src/util/__mocks__/oggToWav.ts",
   "apps/web/src/util/__mocks__/voiceRecording.ts",
+  "apps/web/src/util/__tests__/captureKeyboardListeners.test.ts",
   "apps/web/src/util/accountSlot.ts",
   "apps/web/src/util/aiComposeTones.ts",
   "apps/web/src/util/animateHorizontalScroll.ts",

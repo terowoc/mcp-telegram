@@ -152,9 +152,9 @@ const Modal = (props: OwnProps) => {
     return true;
   });
 
-  useEffect(() => (
-    isOpen ? captureKeyboardListeners({ onEsc: onClose, onEnter: handleEnter }) : undefined
-  ), [isOpen, onClose, handleEnter]);
+  useLayoutEffect(() => (
+    isOpen ? captureKeyboardListeners({ onEsc: onClose, onEnter: handleEnter }, isNativeDialog) : undefined
+  ), [isOpen, onClose, handleEnter, isNativeDialog]);
   useEffect(() => (isOpen && modalRef.current ? trapFocus(modalRef.current) : undefined), [isOpen, modalRef]);
 
   useLayoutEffect(() => {

@@ -70,6 +70,10 @@ export function createSaasIdentity(
       }
       return supervisor.call(id, name, args, options);
     },
+    consentBinding: (id) => {
+      const user = id ? active(id) : undefined;
+      return user ? `${user.id}:${user.policy.version}` : "inactive";
+    },
     describeAccess: (id) => {
       const user = id ? active(id) : undefined;
       if (!user) return "Доступ к Telegram вашего аккаунта. Разрешения задаются в разделе MCP.";
