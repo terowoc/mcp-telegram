@@ -1,22 +1,20 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express, { type ErrorRequestHandler } from "express";
 import { rateLimit } from "express-rate-limit";
 import Provider, { type Configuration, errors } from "oidc-provider";
-import { wireIpcProxies } from "../client.js";
-import type { TelegramService } from "../telegram-client.js";
-import { registerTools } from "../tools/index.js";
-import { loadOrCreateSecrets, verifyPassword } from "./owner.js";
+import { type GatewayIdentity, ownerIdentity } from "./identity.js";
+import { createMcpHandler } from "./mcp-handler.js";
+import { loadOrCreateSecrets } from "./owner.js";
 import { createAdapter } from "./storage.js";
 
 export interface GatewayOptions {
   publicUrl: string;
   storageDir: string;
-  ownerPasswordHash: string;
+  ownerPasswordHash?: string;
+  identity?: GatewayIdentity;
   version: string;
-  callTool: (name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<unknown>;
+  callTool?: (name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<unknown>;
   isHealthy?: () => boolean;
   allowedOrigins?: string[];
   trustProxy?: string | number;
@@ -34,6 +32,15 @@ export async function createHttpGateway(options: GatewayOptions) {
   const url = new URL(options.publicUrl);
   if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash || url.username || url.password)
     throw new Error("MCP_PUBLIC_URL must be an HTTPS origin");
+  if (!options.identity && (!options.ownerPasswordHash || !options.callTool))
+    throw new Error("Owner identity configuration required");
+  const identity =
+    options.identity ??
+    ownerIdentity({
+      ownerPasswordHash: options.ownerPasswordHash ?? "",
+      callTool: options.callTool as NonNullable<GatewayOptions["callTool"]>,
+    });
+  const mcpHandler = createMcpHandler(identity, options.version);
   const origin = url.origin;
   const resource = `${origin}/mcp`;
   const issuer = `${origin}/oauth`;
@@ -65,7 +72,15 @@ export async function createHttpGateway(options: GatewayOptions) {
       Grant: 30 * 86400,
     },
     interactions: { url: (_ctx, interaction) => `${origin}/interaction/${interaction.uid}` },
-    findAccount: (_ctx, id) => (id === "owner" ? { accountId: id, claims: async () => ({ sub: id }) } : undefined),
+    findAccount: (_ctx, id, token) => identity.findAccount(id, token?.grantId),
+    loadExistingGrant: async (ctx) => {
+      const grantId =
+        ctx.oidc.result?.consent?.grantId ||
+        (ctx.oidc.client ? ctx.oidc.session?.grantIdFor(ctx.oidc.client.clientId) : undefined);
+      const accountId = ctx.oidc.result?.login?.accountId || ctx.oidc.session?.accountId;
+      if (!grantId || !accountId || !identity.isGrantValid(accountId, grantId)) return undefined;
+      return ctx.oidc.provider.Grant.find(grantId);
+    },
     features: {
       devInteractions: { enabled: false },
       registration: { enabled: true },
@@ -138,13 +153,14 @@ export async function createHttpGateway(options: GatewayOptions) {
       .status(options.isHealthy?.() === false ? 503 : 200)
       .json({ status: options.isHealthy?.() === false ? "unavailable" : "ok" }),
   );
-  app.get("/", (_req, res) =>
-    res
-      .type("html")
-      .send(
-        "<!doctype html><title>Telegram MCP</title><h1>Telegram MCP</h1><p>Connect your MCP client to /mcp. Access requires owner approval.</p>",
-      ),
-  );
+  if (identity.kind === "owner")
+    app.get("/", (_req, res) =>
+      res
+        .type("html")
+        .send(
+          "<!doctype html><title>Telegram MCP</title><h1>Telegram MCP</h1><p>Connect your MCP client to /mcp. Access requires owner approval.</p>",
+        ),
+    );
   app.get(["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"], (_req, res) =>
     res.json({
       resource,
@@ -185,7 +201,7 @@ export async function createHttpGateway(options: GatewayOptions) {
     res
       .type("html")
       .send(
-        `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: чтение и изменение Telegram от имени владельца.</p><form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${csrfFor(interaction.uid, prompt)}">${prompt === "login" ? '<label>Пароль владельца<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>' : ""}<button name="approve" value="yes">${prompt === "login" ? "Войти" : "Разрешить доступ"}</button> <button name="approve" value="no">Отказать</button></form></html>`,
+        `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: ${escapeHtml(identity.describeAccess(interaction.session?.accountId))}</p><form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${csrfFor(interaction.uid, prompt)}">${prompt === "login" ? `${identity.kind === "saas" ? '<label>Логин TG Bridge<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль TG Bridge" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>` : ""}<button name="approve" value="yes">${prompt === "login" ? "Войти" : "Разрешить доступ"}</button> <button name="approve" value="no">Отказать</button></form></html>`,
       );
   });
   app.post(
@@ -216,27 +232,33 @@ export async function createHttpGateway(options: GatewayOptions) {
         return;
       }
       if (interaction.prompt.name === "login") {
-        if (
-          typeof req.body.password !== "string" ||
-          !(await verifyPassword(req.body.password, options.ownerPasswordHash))
-        ) {
-          res.status(401).send("Неверный пароль владельца");
+        const accountId =
+          typeof req.body.password === "string"
+            ? await identity.authenticate({
+                login: typeof req.body.login === "string" ? req.body.login : undefined,
+                password: req.body.password,
+              })
+            : undefined;
+        if (!accountId) {
+          res.status(401).send("Неверные данные для входа");
           return;
         }
         await provider.interactionFinished(
           req,
           res,
-          { login: { accountId: "owner", remember: true } },
+          { login: { accountId, remember: true } },
           { mergeWithLastSubmission: false },
         );
       } else if (interaction.prompt.name === "consent") {
-        if (interaction.session?.accountId !== "owner") {
+        const accountId = interaction.session?.accountId;
+        if (!accountId || !identity.isActive(accountId)) {
           res.sendStatus(403);
           return;
         }
-        const grant = interaction.grantId
-          ? await provider.Grant.find(interaction.grantId)
-          : new provider.Grant({ accountId: "owner", clientId: String(interaction.params.client_id) });
+        const grant =
+          interaction.grantId && identity.isGrantValid(accountId, interaction.grantId)
+            ? await provider.Grant.find(interaction.grantId)
+            : new provider.Grant({ accountId, clientId: String(interaction.params.client_id) });
         if (!grant) {
           res.sendStatus(400);
           return;
@@ -254,6 +276,7 @@ export async function createHttpGateway(options: GatewayOptions) {
           grant.addResourceScope(target, scopes);
         }
         const grantId = await grant.save();
+        identity.bindGrant(accountId, grantId, String(interaction.params.client_id));
         await provider.interactionFinished(req, res, { consent: { grantId } }, { mergeWithLastSubmission: true });
       } else {
         res.sendStatus(400);
@@ -269,68 +292,23 @@ export async function createHttpGateway(options: GatewayOptions) {
       const match = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? "");
       const token = match ? await provider.AccessToken.find(match[1]) : undefined;
       if (
-        token?.accountId !== "owner" ||
+        !token?.accountId ||
+        !identity.isActive(token.accountId) ||
         token.aud !== resource ||
         !token.scope?.split(" ").includes("mcp:tools") ||
         !token.grantId ||
+        !identity.isGrantValid(token.accountId, token.grantId) ||
         !(await provider.Grant.find(token.grantId))
       ) {
         res.set("WWW-Authenticate", challenge).status(401).json({ error: "invalid_token" });
         return;
       }
+      res.locals.mcpIdentity = { accountId: token.accountId, grantId: token.grantId };
       next();
     },
     express.json({ limit: "1mb" }),
     async (req, res) => {
-      if (Array.isArray(req.body)) {
-        res
-          .status(400)
-          .json({ jsonrpc: "2.0", error: { code: -32600, message: "JSON-RPC batches are not supported" }, id: null });
-        return;
-      }
-      if (typeof req.body?.id === "string" && Buffer.byteLength(req.body.id) > 128) {
-        res
-          .status(400)
-          .json({ jsonrpc: "2.0", error: { code: -32600, message: "Request ID exceeds 128 bytes" }, id: null });
-        return;
-      }
-      const server = new McpServer({ name: "mcp-telegram", version: options.version });
-      registerTools(server, {} as TelegramService);
-      wireIpcProxies(server, {
-        call: async (name, args, callOptions) => {
-          const result = await options.callTool(name, args, callOptions);
-          if (Buffer.byteLength(JSON.stringify(result)) > 2 * 1048576 - 1024)
-            throw new Error("Tool response exceeds hosted output limit; use pagination");
-          return result;
-        },
-      });
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      const send = transport.send.bind(transport);
-      transport.send = async (message, sendOptions) => {
-        if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1048576) {
-          if ("id" in message) {
-            await send(
-              {
-                jsonrpc: "2.0",
-                id: message.id,
-                error: {
-                  code: -32000,
-                  message: "Response exceeds hosted output limit; narrow the request or use pagination",
-                },
-              },
-              sendOptions,
-            );
-          }
-          return;
-        }
-        await send(message, sendOptions);
-      };
-      res.on("close", () => {
-        void transport.close();
-        void server.close();
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await mcpHandler(req, res);
     },
   );
   const onError: ErrorRequestHandler = (error, _req, res, _next) => {
@@ -343,6 +321,13 @@ export async function createHttpGateway(options: GatewayOptions) {
   app.use(onError);
   return {
     app,
+    revokeGrants: async (ids: string[]) => {
+      for (const id of ids) {
+        const grant = await provider.Grant.find(id);
+        if (grant) await grant.destroy();
+        await new Adapter("AccessToken").revokeByGrantId(id);
+      }
+    },
     close: async () => {
       Adapter.close();
     },
