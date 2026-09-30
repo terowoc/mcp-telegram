@@ -211,6 +211,23 @@ export class SaasStore {
     return rows.map((row) => row.grant_id);
   }
 
+  listGrants(userId: string): GrantBinding[] {
+    return this.db
+      .prepare(`SELECT user_id AS userId, grant_id AS grantId, client_id AS clientId,
+      policy_version AS version FROM grant_bindings WHERE user_id=?`)
+      .all(userId) as unknown as GrantBinding[];
+  }
+
+  revokeGrant(userId: string, grantId: string): void {
+    this.db.prepare("DELETE FROM grant_bindings WHERE user_id=? AND grant_id=?").run(userId, grantId);
+  }
+
+  deleteUser(userId: string): void {
+    const user = this.findUser(userId);
+    if (user && !user.disabled) throw new Error("Disable user before deleting");
+    this.db.prepare("DELETE FROM users WHERE id=?").run(userId);
+  }
+
   disableUser(userId: string): void {
     this.transaction(() => {
       this.db.prepare("UPDATE users SET disabled=1 WHERE id=?").run(userId);

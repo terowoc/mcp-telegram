@@ -40,6 +40,7 @@ interface Pending {
 }
 interface Slot {
   userId: string;
+  policyVersion: number;
   generation: string;
   child?: ChildProcess;
   state: "starting" | "ready" | "stopping";
@@ -81,6 +82,10 @@ export class WorkerSupervisor {
     if (!user || user.disabled) throw new Error("User is inactive");
     const existing = this.slots.get(userId);
     if (existing) {
+      if (existing.policyVersion !== user.policy.version) {
+        void this.stopSlot(existing);
+        throw new Error("Telegram worker policy changed; previous worker stopping");
+      }
       if (existing.state === "stopping") throw new Error("Telegram worker is stopping");
       return existing;
     }
@@ -97,6 +102,7 @@ export class WorkerSupervisor {
     });
     const slot: Slot = {
       userId,
+      policyVersion: user.policy.version,
       generation: randomUUID(),
       state: "starting",
       ready,
@@ -293,6 +299,11 @@ export class WorkerSupervisor {
   }
   call(userId: string, name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}) {
     return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), options);
+  }
+  async prepareLogin(userId: string): Promise<void> {
+    const slot = this.acquire(userId);
+    await this.waitReady(slot);
+    if (slot.state !== "ready" || slot.pending.size) throw new Error("Telegram worker busy");
   }
   async startLogin(userId: string, attemptId: string, onEvent: (event: LoginEvent) => void): Promise<void> {
     await this.request(userId, (generation, id) => ({ kind: "login-start", generation, id, attemptId }), {

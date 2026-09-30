@@ -24,3 +24,17 @@ export interface GrantBinding {
   clientId: string;
   version: number;
 }
+
+/** Browser DTOs deliberately exclude persistence envelopes and authentication hashes. */
+export interface SaasMe {
+  user: { id: string; login: string };
+  csrfToken: string;
+  policy: UserPolicy;
+  telegram: { state: "stopped" | "starting" | "ready" | "stopping"; busy: boolean; sessionPresent: boolean };
+  mcpUrl: string;
+}
+export interface SaasClient {
+  grantId: string;
+  clientId: string;
+  version: number;
+}

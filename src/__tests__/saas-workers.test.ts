@@ -75,7 +75,10 @@ test("workers never share identity policy or session", async () => {
     const b = s.supervisor.call(s.users[1].id, "telegram-status", {});
     await waitFor(() => s.children.length === 2 && s.children.every((child) => child.sent.length === 2));
     assert.equal(s.children.length, 2);
-    const [initA, initB] = s.children.map((child) => child.sent[0]);
+    const childA = s.children.find((child) => child.sent[0]?.kind === "init" && child.sent[0].userId === s.users[0].id);
+    const childB = s.children.find((child) => child.sent[0]?.kind === "init" && child.sent[0].userId === s.users[1].id);
+    assert.ok(childA && childB);
+    const [initA, initB] = [childA.sent[0], childB.sent[0]];
     assert.equal(initA.kind, "init");
     assert.equal(initB.kind, "init");
     if (initA.kind !== "init" || initB.kind !== "init") throw new Error("Expected init");
@@ -100,9 +103,11 @@ test("capacity includes starting and stopping workers; cancelled admission consu
     await waitFor(() => s.children.length === 4);
     assert.equal(s.children.length, 4);
     await assert.rejects(s.supervisor.call(s.users[4].id, "telegram-status", {}), /capacity/i);
+    const childA = s.children.find((child) => child.sent[0]?.kind === "init" && child.sent[0].userId === s.users[0].id);
+    assert.ok(childA);
     const stopped = s.supervisor.stopUser(s.users[0].id);
     await assert.rejects(s.supervisor.call(s.users[4].id, "telegram-status", {}), /capacity/i);
-    s.children[0].emit("exit", 0);
+    childA.emit("exit", 0);
     await stopped;
     const aborted = new AbortController();
     aborted.abort();
@@ -194,4 +199,23 @@ test("idle worker releases its slot and shutdown waits for workers", async () =>
   await closing;
   assert.equal(closed, true);
   s.store.close();
+});
+
+test("changing policy never reuses a worker with the previous policy", async () => {
+  const s = setup();
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    s.children[0].reply();
+    await first;
+    s.store.updatePolicy(s.users[0].id, { profile: "read", chatIds: ["123"], version: 0 });
+    const changed = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    const rejection = assert.rejects(changed, /policy|stopping/i);
+    await tick();
+    if (s.children[0].sent.at(-1)?.kind === "tool") s.children[0].reply();
+    await rejection;
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
 });
