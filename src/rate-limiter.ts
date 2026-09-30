@@ -18,6 +18,12 @@ export interface RateLimiterOptions {
   maxRetryDelay?: number;
 }
 
+export interface RetryOptions {
+  throwOnFloodWait?: boolean;
+  /** False for opaque sends whose deduplication ID cannot be reused by the caller. */
+  retrySafe?: boolean;
+}
+
 export class RateLimiter {
   private minInterval: number;
   private maxRetries: number;
@@ -39,7 +45,7 @@ export class RateLimiter {
    * @param throwOnFloodWait If true, throw immediately on FLOOD_WAIT instead of sleeping (use for
    *   endpoints with very long rate-limit windows like stats APIs).
    */
-  async execute<T>(fn: () => Promise<T>, context = "API call", options?: { throwOnFloodWait?: boolean }): Promise<T> {
+  async execute<T>(fn: () => Promise<T>, context = "API call", options?: RetryOptions): Promise<T> {
     return this.executeWithRetry(fn, context, 0, options);
   }
 
@@ -47,7 +53,7 @@ export class RateLimiter {
     fn: () => Promise<T>,
     context: string,
     attempt: number,
-    options?: { throwOnFloodWait?: boolean },
+    options?: RetryOptions,
   ): Promise<T> {
     await this.waitForSlot();
 
@@ -81,6 +87,11 @@ export class RateLimiter {
         return this.executeWithRetry(fn, context, attempt + 1, options);
       }
 
+      if (options?.retrySafe === false && (isNetworkError(errorMessage) || isTemporaryError(errorMessage))) {
+        throw new Error(`Delivery status may be unknown: ${errorMessage}. Check the chat before retrying.`, {
+          cause: error,
+        });
+      }
       // Network/timeout errors — exponential backoff
       if (isNetworkError(errorMessage)) {
         if (attempt >= this.maxRetries) {
