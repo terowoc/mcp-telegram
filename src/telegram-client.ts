@@ -353,6 +353,25 @@ function ensureSessionDir(filePath: string): void {
 
 export type ChatEntity = Api.User | Api.Chat | Api.Channel | Api.TypeUser | Api.TypeChat;
 
+export interface QrLoginOptions {
+  requestPassword?: (signal: AbortSignal) => Promise<string | undefined>;
+}
+
+async function requestLoginPassword(
+  request: NonNullable<QrLoginOptions["requestPassword"]>,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  if (signal.aborted) throw new Error("QR login aborted");
+  return new Promise((resolve, reject) => {
+    const cancel = () => reject(new Error("QR login aborted"));
+    signal.addEventListener("abort", cancel, { once: true });
+    Promise.resolve()
+      .then(() => request(signal))
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", cancel));
+  });
+}
+
 export class TelegramService {
   private readonly toolPolicy = new ToolPolicy();
   private readonly connecting = new SingleFlight<boolean>();
@@ -365,6 +384,7 @@ export class TelegramService {
   private sessionString = "";
   private connected = false;
   private sessionPath: string;
+  private readonly sessionStore?: import("./telegram-session-store.js").TelegramSessionStore;
   private rateLimiter = new RateLimiter();
   private lastTypingAt = new Map<string, number>();
   private entityCache = new Map<string, ChatEntity>();
@@ -375,7 +395,7 @@ export class TelegramService {
   }
 
   hasLocalSession(): boolean {
-    return existsSync(this.sessionPath);
+    return this.sessionStore ? this.sessionStore.hasSession() : existsSync(this.sessionPath);
   }
 
   diagnostics() {
@@ -395,13 +415,24 @@ export class TelegramService {
     return this.client;
   }
 
-  constructor(apiId: number, apiHash: string, options?: { sessionPath?: string }) {
+  constructor(
+    apiId: number,
+    apiHash: string,
+    options?: { sessionPath?: string; sessionStore?: import("./telegram-session-store.js").TelegramSessionStore },
+  ) {
     this.apiId = apiId;
     this.apiHash = apiHash;
     this.sessionPath = resolveSessionPath(options?.sessionPath);
+    this.sessionStore = options?.sessionStore;
   }
 
   async loadSession(): Promise<boolean> {
+    if (this.sessionStore) {
+      const raw = (await this.sessionStore.load())?.trim();
+      if (!raw || !this.isValidSessionString(raw)) return false;
+      this.sessionString = raw;
+      return true;
+    }
     // Try current session path
     if (existsSync(this.sessionPath)) {
       const raw = (await readFile(this.sessionPath, "utf-8")).trim();
@@ -451,6 +482,11 @@ export class TelegramService {
   }
 
   private async saveSession(session: string): Promise<void> {
+    if (this.sessionStore) {
+      await this.sessionStore.save(session);
+      this.sessionString = session;
+      return;
+    }
     this.sessionString = session;
     try {
       ensureSessionDir(this.sessionPath);
@@ -589,6 +625,10 @@ export class TelegramService {
     // loop and auto-reconnect running with nobody left to stop it.
     await this.dropDeadClient();
     this.sessionString = "";
+    if (this.sessionStore) {
+      await this.sessionStore.clear();
+      return;
+    }
     if (existsSync(this.sessionPath)) {
       await unlink(this.sessionPath);
     }
@@ -640,13 +680,13 @@ export class TelegramService {
     await this.cancelQrLogin();
     const wipeLocalOrThrow = async () => {
       await this.clearSession();
-      if (existsSync(this.sessionPath)) {
+      if (this.hasLocalSession()) {
         throw new Error(`Local session file still present after clearSession: ${this.sessionPath}`);
       }
     };
 
     if (!this.client || !this.connected) {
-      if (existsSync(this.sessionPath)) await wipeLocalOrThrow();
+      if (this.hasLocalSession() || this.sessionString) await wipeLocalOrThrow();
       return false;
     }
 
@@ -678,6 +718,7 @@ export class TelegramService {
     onQrDataUrl: (dataUrl: string) => void,
     onQrUrl?: (url: string) => void,
     signal?: AbortSignal,
+    loginOptions?: QrLoginOptions,
   ): Promise<{
     success: boolean;
     message: string;
@@ -692,7 +733,7 @@ export class TelegramService {
     this.qrAbort = abort;
     const login = (async () => {
       await this.connecting.wait();
-      return this.startQrLoginOnce(onQrDataUrl, onQrUrl, abort.signal);
+      return this.startQrLoginOnce(onQrDataUrl, onQrUrl, abort.signal, loginOptions);
     })();
     this.qrLogin = login;
     try {
@@ -708,6 +749,7 @@ export class TelegramService {
     onQrDataUrl: (dataUrl: string) => void,
     onQrUrl?: (url: string) => void,
     signal?: AbortSignal,
+    loginOptions?: QrLoginOptions,
   ): Promise<{ success: boolean; message: string }> {
     // Early exit if already aborted — avoids creating a Telegram connection we'd immediately tear down.
     if (signal?.aborted) return { success: false, message: "QR login aborted" };
@@ -783,7 +825,12 @@ export class TelegramService {
             // The QR was scanned, but the account has two-step verification.
             // Complete the login with an SRP password check if we have the
             // cloud password; otherwise tell the user how to provide it.
-            const outcome = await completeTwoFactorLogin(client, resolveTwoFactorPassword());
+            const password = loginOptions?.requestPassword
+              ? await requestLoginPassword(loginOptions.requestPassword, signal ?? new AbortController().signal)
+              : this.sessionStore
+                ? undefined
+                : resolveTwoFactorPassword();
+            const outcome = await completeTwoFactorLogin(client, password);
             if (outcome.ok) {
               resolved = true;
               break;
