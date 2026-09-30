@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
 import { fail, ok, READ_ONLY, requireConnection, WRITE } from "./shared.js";
 
@@ -8,7 +9,7 @@ export function registerContactTools(server: McpServer, telegram: TelegramServic
     "telegram-get-contacts",
     {
       description: "Get your Telegram contacts list with phone numbers",
-      inputSchema: { limit: z.number().default(50).describe("Number of contacts to return") },
+      inputSchema: { limit: pageLimit(50).describe("Number of contacts to return") },
       annotations: READ_ONLY,
     },
     async ({ limit }) => {
@@ -68,7 +69,7 @@ export function registerContactTools(server: McpServer, telegram: TelegramServic
     {
       description:
         "Get incoming messages from non-contacts (contact requests). Shows who messaged you without being in your contacts, with message preview",
-      inputSchema: { limit: z.number().default(20).describe("Number of contact requests to return") },
+      inputSchema: { limit: pageLimit(20).describe("Number of contact requests to return") },
       annotations: READ_ONLY,
     },
     async ({ limit }) => {

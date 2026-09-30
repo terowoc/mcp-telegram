@@ -1,7 +1,7 @@
 import assert from "node:assert";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { lockPath, releaseLock, releaseSocket, socketPath, tryAcquireLock } from "../lock.js";
 
@@ -16,6 +16,9 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
+    if (process.platform !== "win32" && existsSync(socketPath())) unlinkSync(socketPath());
+  } catch {}
+  try {
     rmSync(testDir, { recursive: true, force: true });
   } catch {
     // Temp-dir cleanup is best-effort: each test gets a fresh uniquely-named dir, so a
@@ -26,6 +29,27 @@ afterEach(() => {
 });
 
 describe("tryAcquireLock", () => {
+  it("relative and absolute spellings identify the same session", () => {
+    const original = lockPath();
+    process.env.TELEGRAM_SESSION_PATH = relative(process.cwd(), join(testDir, "session"));
+    assert.strictEqual(lockPath(), original);
+  });
+  it("refuses to create a second owner while a legacy daemon is alive", () => {
+    writeFileSync(join(testDir, "daemon.lock"), String(process.pid));
+    assert.strictEqual(tryAcquireLock(), false);
+    assert.strictEqual(existsSync(lockPath()), false);
+  });
+  it("isolates two session files in the same directory", () => {
+    const firstSocket = socketPath();
+    const firstLock = lockPath();
+    assert.strictEqual(tryAcquireLock(), true);
+    process.env.TELEGRAM_SESSION_PATH = join(testDir, "session-personal");
+    assert.notStrictEqual(socketPath(), firstSocket);
+    assert.notStrictEqual(lockPath(), firstLock);
+    assert.strictEqual(tryAcquireLock(), true);
+    releaseLock();
+    assert.strictEqual(existsSync(firstLock), true);
+  });
   it("no lock file → creates it with our PID, returns true", () => {
     assert.strictEqual(tryAcquireLock(), true);
     const written = readFileSync(lockPath(), "utf-8").trim();
@@ -102,9 +126,10 @@ describe("socketPath() platform mapping", () => {
     Object.defineProperty(process, "platform", { value, configurable: true });
   afterEach(() => setPlatform(realPlatform));
 
-  it("posix → a daemon.sock file inside the session dir", () => {
+  it("posix uses a bounded socket path derived from the session file", () => {
     setPlatform("linux");
-    assert.strictEqual(socketPath(), join(testDir, "daemon.sock"));
+    assert.ok(Buffer.byteLength(socketPath()) <= 100);
+    assert.match(socketPath(), /[a-f0-9]{32}\.sock$/);
   });
 
   it("win32 → a \\\\.\\pipe\\ name, never a filesystem path", () => {

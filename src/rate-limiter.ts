@@ -1,3 +1,6 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { operationSignal } from "./operation-context.js";
+
 /**
  * Rate limiter and retry logic for Telegram API calls.
  * Handles FLOOD_WAIT errors and implements exponential backoff.
@@ -16,6 +19,13 @@ export interface RateLimiterOptions {
   initialRetryDelay?: number;
   /** Maximum retry delay in milliseconds (default: 60000) */
   maxRetryDelay?: number;
+}
+
+export interface RetryOptions {
+  throwOnFloodWait?: boolean;
+  /** False for opaque sends whose deduplication ID cannot be reused by the caller. */
+  retrySafe?: boolean;
+  signal?: AbortSignal;
 }
 
 export class RateLimiter {
@@ -39,7 +49,7 @@ export class RateLimiter {
    * @param throwOnFloodWait If true, throw immediately on FLOOD_WAIT instead of sleeping (use for
    *   endpoints with very long rate-limit windows like stats APIs).
    */
-  async execute<T>(fn: () => Promise<T>, context = "API call", options?: { throwOnFloodWait?: boolean }): Promise<T> {
+  async execute<T>(fn: () => Promise<T>, context = "API call", options?: RetryOptions): Promise<T> {
     return this.executeWithRetry(fn, context, 0, options);
   }
 
@@ -47,13 +57,17 @@ export class RateLimiter {
     fn: () => Promise<T>,
     context: string,
     attempt: number,
-    options?: { throwOnFloodWait?: boolean },
+    options?: RetryOptions,
   ): Promise<T> {
-    await this.waitForSlot();
+    const signal = options?.signal ?? operationSignal();
+    signal?.throwIfAborted();
+    await this.waitForSlot(signal);
+    signal?.throwIfAborted();
 
     try {
       return await fn();
     } catch (error) {
+      signal?.throwIfAborted();
       const errorMessage =
         (error as { errorMessage?: string }).errorMessage || (error as Error).message || String(error);
 
@@ -77,10 +91,15 @@ export class RateLimiter {
           attempt: attempt + 1,
           maxRetries: this.maxRetries,
         });
-        await sleep(waitSeconds * 1000);
+        await sleep(waitSeconds * 1000, signal);
         return this.executeWithRetry(fn, context, attempt + 1, options);
       }
 
+      if (options?.retrySafe === false && (isNetworkError(errorMessage) || isTemporaryError(errorMessage))) {
+        throw new Error(`Delivery status may be unknown: ${errorMessage}. Check the chat before retrying.`, {
+          cause: error,
+        });
+      }
       // Network/timeout errors — exponential backoff
       if (isNetworkError(errorMessage)) {
         if (attempt >= this.maxRetries) {
@@ -95,7 +114,7 @@ export class RateLimiter {
           maxRetries: this.maxRetries,
           error: errorMessage,
         });
-        await sleep(delay);
+        await sleep(delay, signal);
         return this.executeWithRetry(fn, context, attempt + 1, options);
       }
 
@@ -113,7 +132,7 @@ export class RateLimiter {
           maxRetries: this.maxRetries,
           error: errorMessage,
         });
-        await sleep(delay);
+        await sleep(delay, signal);
         return this.executeWithRetry(fn, context, attempt + 1, options);
       }
 
@@ -122,11 +141,11 @@ export class RateLimiter {
     }
   }
 
-  private waitForSlot(): Promise<void> {
+  private waitForSlot(signal?: AbortSignal): Promise<void> {
     // Chain onto the previous slot so concurrent callers queue up sequentially.
     // Each turn: wait minInterval from when the previous turn started, then resolve.
-    const nextSlot = this.slotQueue.then(() => sleep(this.minInterval));
-    this.slotQueue = nextSlot;
+    const nextSlot = this.slotQueue.then(() => sleep(this.minInterval, signal));
+    this.slotQueue = nextSlot.catch(() => {});
     return nextSlot;
   }
 }
@@ -174,8 +193,13 @@ function isTemporaryError(msg: string): boolean {
   return /INTERNAL|^50[023]$|Internal Server Error|Service Unavailable|Bad Gateway/i.test(msg);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  try {
+    await delay(ms, undefined, { signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
 }
 
 function logEvent(payload: Record<string, string | number>): void {

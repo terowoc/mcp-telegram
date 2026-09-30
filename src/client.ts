@@ -4,10 +4,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   encodeMessage,
+  IpcDecoder,
   type IpcLoginDone,
   type IpcMessage,
   type McpServerInternal,
-  parseMessages,
 } from "./ipc-protocol.js";
 import { socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
@@ -38,7 +38,6 @@ export class IpcClient {
   private socket: Socket | null = null;
   private pending = new Map<string, PendingCall>();
   private pendingLogins = new Map<string, PendingLogin>();
-  private buf = "";
   private connected = false;
   private destroyed = false;
   private onDisconnect?: () => void;
@@ -77,11 +76,13 @@ export class IpcClient {
         this.connected = true;
         s.removeListener("error", onError);
 
+        const decoder = new IpcDecoder();
         s.on("data", (chunk) => {
-          this.buf += chunk.toString("utf-8");
-          const { messages, remaining } = parseMessages(this.buf);
-          this.buf = remaining;
-          for (const msg of messages) this.routeMessage(msg);
+          try {
+            for (const msg of decoder.push(chunk)) this.routeMessage(msg);
+          } catch {
+            s.destroy();
+          }
         });
 
         s.on("close", () => {
@@ -147,19 +148,48 @@ export class IpcClient {
     return this.connected;
   }
 
-  async call(tool: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!this.socket || !this.connected) {
-      throw new Error("IPC client not connected");
-    }
+  async call(tool: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<unknown> {
+    if (!this.socket || !this.connected) throw new Error("IPC client not connected");
+    options.signal?.throwIfAborted();
+    if (this.pending.size + this.pendingLogins.size >= 64)
+      throw new Error("IPC pending queue is full; try again later");
     const id = randomUUID();
     const socket = this.socket;
+    const deadlineAt = Date.now() + this.callTimeoutMs - Math.min(250, Math.floor(this.callTimeoutMs / 10));
+    // Encoding may reject a large payload; do this before retaining a call or timer.
+    const frame = encodeMessage({ type: "tool", id, tool, args, deadlineAt });
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", cancel);
         this.pending.delete(id);
-        reject(new Error(`IPC call timeout: ${tool}`));
+      };
+      const fail = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const cancel = () => {
+        if (!socket.destroyed) socket.write(encodeMessage({ type: "cancel", id }));
+        fail(options.signal?.reason instanceof Error ? options.signal.reason : new Error("IPC call cancelled"));
+      };
+      const timer = setTimeout(() => {
+        if (!socket.destroyed) socket.write(encodeMessage({ type: "cancel", id }));
+        fail(new Error(`IPC call timeout: ${tool}`));
       }, this.callTimeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      socket.write(encodeMessage({ type: "tool", id, tool, args }));
+      this.pending.set(id, {
+        resolve: (result) => {
+          cleanup();
+          resolve(result);
+        },
+        reject: fail,
+        timer,
+      });
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        socket.write(frame);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -170,11 +200,14 @@ export class IpcClient {
     if (!this.socket || !this.connected) {
       throw new Error("IPC client not connected");
     }
+    if (this.pendingLogins.size > 0) throw new Error("Another QR login is already in progress");
+    if (this.pending.size >= 64) throw new Error("IPC pending queue is full; try again later");
     const id = randomUUID();
     const socket = this.socket;
     return new Promise<IpcLoginDone>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingLogins.delete(id);
+        if (!socket.destroyed) socket.write(encodeMessage({ type: "cancel", id }));
         reject(new Error("Login flow timeout"));
       }, this.loginTimeoutMs);
       this.pendingLogins.set(id, { onQr, resolve, reject, timer });
@@ -204,7 +237,10 @@ export function wireIpcProxies(server: McpServer, ipc: Pick<IpcClient, "call">):
   const s = server as unknown as McpServerInternal;
   for (const [name, tool] of Object.entries(s._registeredTools)) {
     Object.assign(tool, {
-      handler: (args: Record<string, unknown>) => ipc.call(name, args),
+      handler: (args: Record<string, unknown>, extra?: Record<string, unknown>) =>
+        ipc.call(name, tool.inputSchema ? args : {}, {
+          signal: (tool.inputSchema ? extra?.signal : args?.signal) as AbortSignal | undefined,
+        }),
     });
   }
 }

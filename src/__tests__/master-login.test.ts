@@ -86,7 +86,8 @@ describe("master handleLoginStart", () => {
 
     sockPath = makeIpcEndpoint("mcp-master-login");
     endpoints.push(sockPath);
-    server = createServer((socket) => handleClient(socket, mcp, telegram));
+    const registry = { _registeredTools: { "telegram-login": { handler: async () => ({}) }, ...mcp._registeredTools } };
+    server = createServer((socket) => handleClient(socket, registry, telegram));
     await new Promise<void>((resolve) => server.listen(sockPath, resolve));
   }
 

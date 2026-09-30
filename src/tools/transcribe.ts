@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
-import { fail, ok, READ_ONLY, requireConnection, WRITE } from "./shared.js";
+import { fail, ok, requireConnection, WRITE } from "./shared.js";
 
 export function registerTranscribeTools(server: McpServer, telegram: TelegramService) {
   server.registerTool(
@@ -42,12 +42,12 @@ export function registerTranscribeTools(server: McpServer, telegram: TelegramSer
     "telegram-get-transcription",
     {
       description:
-        "Poll for updated transcription result. Calls the same endpoint as telegram-transcribe-audio — Telegram guarantees idempotency (returns same transcriptionId with updated text once processing completes).",
+        "Start or poll a transcription through the same endpoint as telegram-transcribe-audio. Can initiate processing and consume transcription quota; requires write access.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         messageId: z.number().int().positive().describe("Message ID of the voice or video note"),
       },
-      annotations: READ_ONLY,
+      annotations: WRITE,
     },
     async ({ chatId, messageId }) => {
       const err = await requireConnection(telegram);

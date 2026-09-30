@@ -12,8 +12,10 @@ import type { ProxyInterface } from "telegram/network/connection/TCPMTProxy.js";
 import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
-import { getInputUser } from "telegram/Utils.js";
+import { getInputUser, getPeerId } from "telegram/Utils.js";
+import { SingleFlight } from "./connection-lifecycle.js";
 import { mediaPolicy } from "./file-policy.js";
+import { operationSignal } from "./operation-context.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type {
   AllStoriesSummary,
@@ -90,6 +92,7 @@ import {
 } from "./telegram-helpers.js";
 import type { SavedMusicResponse } from "./tl/saved-music.js";
 import { GetSavedMusicRequest } from "./tl/saved-music.js";
+import { ToolPolicy } from "./tool-policy.js";
 
 export type {
   AllStoriesSummary,
@@ -351,6 +354,11 @@ function ensureSessionDir(filePath: string): void {
 export type ChatEntity = Api.User | Api.Chat | Api.Channel | Api.TypeUser | Api.TypeChat;
 
 export class TelegramService {
+  private readonly toolPolicy = new ToolPolicy();
+  private readonly connecting = new SingleFlight<boolean>();
+  private stopping = 0;
+  private qrLogin: Promise<{ success: boolean; message: string }> | undefined;
+  private qrAbort: AbortController | undefined;
   private client: TelegramClient | null = null;
   private apiId: number;
   private apiHash: string;
@@ -368,6 +376,17 @@ export class TelegramService {
 
   hasLocalSession(): boolean {
     return existsSync(this.sessionPath);
+  }
+
+  diagnostics() {
+    return {
+      connected: this.isConnected(),
+      sessionPresent: this.hasLocalSession(),
+      connecting: this.connecting.isActive(),
+      loginInProgress: !!this.qrLogin,
+      stopping: this.stopping > 0,
+      hasError: !!this.lastError,
+    };
   }
 
   // ─── Session & Auth ────────────────────────────────────────────────────────
@@ -492,6 +511,11 @@ export class TelegramService {
   }
 
   async connect(): Promise<boolean> {
+    if (this.stopping > 0 || this.qrLogin) return false;
+    return this.connecting.run(() => this.connectOnce());
+  }
+
+  private async connectOnce(): Promise<boolean> {
     if (this.connected && this.client && !this.isTransportDead()) return true;
 
     // Either we were never connected, or the flag is stale and the sender underneath is
@@ -525,7 +549,7 @@ export class TelegramService {
 
       // Auth revoked — delete invalid session
       if (msg === "AUTH_KEY_UNREGISTERED" || msg === "SESSION_REVOKED" || msg === "USER_DEACTIVATED") {
-        await this.clearSession();
+        await this.eraseSession();
         this.lastError = "Session revoked. Run telegram-login to re-authenticate.";
       }
       // Network error — keep session, just report
@@ -557,6 +581,10 @@ export class TelegramService {
   }
 
   async clearSession(): Promise<void> {
+    await this.stopConnection(true);
+  }
+
+  private async eraseSession(): Promise<void> {
     // Destroy, never just drop the reference: an orphaned GramJS client keeps its update
     // loop and auto-reconnect running with nobody left to stop it.
     await this.dropDeadClient();
@@ -568,6 +596,7 @@ export class TelegramService {
 
   /** Ensure connection is active, auto-reconnect if session exists */
   async ensureConnected(): Promise<boolean> {
+    if (this.stopping > 0 || this.qrLogin) return false;
     if (this.connected && this.client && !this.isTransportDead()) {
       return true;
     }
@@ -577,10 +606,27 @@ export class TelegramService {
   }
 
   async disconnect(): Promise<void> {
-    // Tear the client down whatever the flag says. It used to require `this.connected`,
-    // but markUnhealthy() and a stale transport both clear the flag while leaving the
-    // client (and its update loop) alive, so disconnecting such a service leaked it.
-    await this.dropDeadClient();
+    await this.stopConnection(false);
+  }
+
+  private async stopConnection(wipe: boolean): Promise<void> {
+    this.stopping++;
+    try {
+      await this.cancelQrLogin();
+      await this.connecting.wait();
+      // Tear the client down whatever the flag says. It used to require `this.connected`,
+      // but markUnhealthy() and a stale transport both clear the flag while leaving the
+      // client (and its update loop) alive, so disconnecting such a service leaked it.
+      await this.dropDeadClient();
+      if (wipe) await this.eraseSession();
+    } finally {
+      this.stopping--;
+    }
+  }
+
+  async cancelQrLogin(): Promise<void> {
+    this.qrAbort?.abort();
+    await this.qrLogin;
   }
 
   /**
@@ -591,6 +637,7 @@ export class TelegramService {
    * surface the partial state instead of silently misreporting success.
    */
   async logOut(): Promise<boolean> {
+    await this.cancelQrLogin();
     const wipeLocalOrThrow = async () => {
       await this.clearSession();
       if (existsSync(this.sessionPath)) {
@@ -635,6 +682,33 @@ export class TelegramService {
     success: boolean;
     message: string;
   }> {
+    if (this.qrLogin) return { success: false, message: "Another QR login is already in progress" };
+    if (this.stopping > 0) return { success: false, message: "Telegram connection is stopping" };
+    const parent = signal ?? operationSignal();
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    if (parent?.aborted) cancel();
+    else parent?.addEventListener("abort", cancel, { once: true });
+    this.qrAbort = abort;
+    const login = (async () => {
+      await this.connecting.wait();
+      return this.startQrLoginOnce(onQrDataUrl, onQrUrl, abort.signal);
+    })();
+    this.qrLogin = login;
+    try {
+      return await login;
+    } finally {
+      this.qrLogin = undefined;
+      this.qrAbort = undefined;
+      parent?.removeEventListener("abort", cancel);
+    }
+  }
+
+  private async startQrLoginOnce(
+    onQrDataUrl: (dataUrl: string) => void,
+    onQrUrl?: (url: string) => void,
+    signal?: AbortSignal,
+  ): Promise<{ success: boolean; message: string }> {
     // Early exit if already aborted — avoids creating a Telegram connection we'd immediately tear down.
     if (signal?.aborted) return { success: false, message: "QR login aborted" };
 
@@ -806,56 +880,61 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     // pi-lens-ignore: sql-injection
-    return this.rateLimiter.execute(async () => {
-      const resolved = await this.resolvePeer(chatId);
-      // Raw path: high-level client.sendMessage does not support quoteText/effect.
-      // Fall back to messages.SendMessage when either is requested.
-      if (extra?.quoteText || extra?.effect) {
-        if (extra.quoteText && !replyTo) {
-          throw new Error("quoteText requires replyTo — provide the message ID of the message you are quoting");
-        }
-        const replyToObj = extra.quoteText
-          ? new Api.InputReplyToMessage({
-              replyToMsgId: replyTo as number,
-              topMsgId: topicId,
-              quoteText: extra.quoteText,
-            })
-          : buildReplyTo(replyTo, topicId);
-        // GramJS parses md/html via the internal `_parseMessageText` helper. We feature-detect
-        // it so a future GramJS rename surfaces a clear error instead of silently sending plain.
-        let parsedText = text;
-        let entities: Api.TypeMessageEntity[] | undefined;
-        if (parseMode) {
-          // biome-ignore lint/suspicious/noExplicitAny: GramJS internal helper, no public typing
-          const parser = (client as unknown as any)._parseMessageText;
-          if (typeof parser !== "function") {
-            throw new Error(
-              "GramJS version incompatible: parseMode not supported in quoteText/effect code path. Omit parseMode or upgrade GramJS.",
-            );
+    const randomId = generateRandomBigInt();
+    return this.rateLimiter.execute(
+      async () => {
+        const resolved = await this.resolvePeer(chatId);
+        // Raw path: high-level client.sendMessage does not support quoteText/effect.
+        // Fall back to messages.SendMessage when either is requested.
+        if (extra?.quoteText || extra?.effect) {
+          if (extra.quoteText && !replyTo) {
+            throw new Error("quoteText requires replyTo — provide the message ID of the message you are quoting");
           }
-          [parsedText, entities] = await parser.call(client, text, parseMode === "html" ? "html" : "md");
+          const replyToObj = extra.quoteText
+            ? new Api.InputReplyToMessage({
+                replyToMsgId: replyTo as number,
+                topMsgId: topicId,
+                quoteText: extra.quoteText,
+              })
+            : buildReplyTo(replyTo, topicId);
+          // GramJS parses md/html via the internal `_parseMessageText` helper. We feature-detect
+          // it so a future GramJS rename surfaces a clear error instead of silently sending plain.
+          let parsedText = text;
+          let entities: Api.TypeMessageEntity[] | undefined;
+          if (parseMode) {
+            // biome-ignore lint/suspicious/noExplicitAny: GramJS internal helper, no public typing
+            const parser = (client as unknown as any)._parseMessageText;
+            if (typeof parser !== "function") {
+              throw new Error(
+                "GramJS version incompatible: parseMode not supported in quoteText/effect code path. Omit parseMode or upgrade GramJS.",
+              );
+            }
+            [parsedText, entities] = await parser.call(client, text, parseMode === "html" ? "html" : "md");
+          }
+          const result = await client.invoke(
+            new Api.messages.SendMessage({
+              peer: resolved,
+              message: parsedText,
+              randomId,
+              ...(replyToObj ? { replyTo: replyToObj } : {}),
+              ...(entities?.length ? { entities } : {}),
+              ...(extra.effect ? { effect: bigInt(extra.effect) } : {}),
+            }),
+          );
+          const id = extractMessageId(result);
+          if (id === undefined) throw new Error("Telegram did not return a message ID for sendMessage");
+          // Return a minimal UpdateShortSentMessage — it only carries `id`, avoiding fake peerId/date.
+          return new Api.UpdateShortSentMessage({ id, pts: 0, ptsCount: 0, date: Math.floor(Date.now() / 1000) });
         }
-        const result = await client.invoke(
-          new Api.messages.SendMessage({
-            peer: resolved,
-            message: parsedText,
-            randomId: generateRandomBigInt(),
-            ...(replyToObj ? { replyTo: replyToObj } : {}),
-            ...(entities?.length ? { entities } : {}),
-            ...(extra.effect ? { effect: bigInt(extra.effect) } : {}),
-          }),
-        );
-        const id = extractMessageId(result);
-        if (id === undefined) throw new Error("Telegram did not return a message ID for sendMessage");
-        // Return a minimal UpdateShortSentMessage — it only carries `id`, avoiding fake peerId/date.
-        return new Api.UpdateShortSentMessage({ id, pts: 0, ptsCount: 0, date: Math.floor(Date.now() / 1000) });
-      }
-      return await client.sendMessage(resolved, {
-        message: text,
-        ...topicReplyOptions(replyTo, topicId),
-        ...(parseMode ? { parseMode: parseMode === "html" ? "html" : "md" } : {}),
-      });
-    }, `sendMessage to ${chatId}`);
+        return await client.sendMessage(resolved, {
+          message: text,
+          ...topicReplyOptions(replyTo, topicId),
+          ...(parseMode ? { parseMode: parseMode === "html" ? "html" : "md" } : {}),
+        });
+      },
+      `sendMessage to ${chatId}`,
+      { retrySafe: Boolean(extra?.quoteText || extra?.effect) },
+    );
   }
 
   /**
@@ -880,19 +959,23 @@ export class TelegramService {
     filePath = await mediaPolicy().upload(filePath);
     const fileName = opts.fileName;
     // pi-lens-ignore: sql-injection
-    await this.rateLimiter.execute(async () => {
-      const resolved = await this.resolvePeer(chatId);
-      if (fileName) {
-        const { size } = await stat(filePath);
-        await this.client?.sendFile(resolved, {
-          file: new CustomFile(fileName, size, filePath),
-          caption,
-          forceDocument: true,
-        });
-        return;
-      }
-      await this.client?.sendFile(resolved, { file: filePath, caption });
-    }, `sendFile to ${chatId}`);
+    await this.rateLimiter.execute(
+      async () => {
+        const resolved = await this.resolvePeer(chatId);
+        if (fileName) {
+          const { size } = await stat(filePath);
+          await this.client?.sendFile(resolved, {
+            file: new CustomFile(fileName, size, filePath),
+            caption,
+            forceDocument: true,
+          });
+          return;
+        }
+        await this.client?.sendFile(resolved, { file: filePath, caption });
+      },
+      `sendFile to ${chatId}`,
+      { retrySafe: false },
+    );
   }
 
   async sendVoice(
@@ -913,20 +996,24 @@ export class TelegramService {
     filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     // pi-lens-ignore: sql-injection
-    return this.rateLimiter.execute(async () => {
-      const resolved = await this.resolvePeer(chatId);
-      const file = opts.fileName ? new CustomFile(opts.fileName, (await stat(filePath)).size, filePath) : filePath;
-      // Duration is intentionally auto-detected by GramJS from the audio file —
-      // letting the AI override it would mis-report playback length in the Telegram UI.
-      const message = await client.sendFile(resolved, {
-        file,
-        voiceNote: true,
-        caption: opts.caption,
-        parseMode: opts.parseMode,
-        ...topicReplyOptions(opts.replyTo, opts.topicId),
-      });
-      return { id: message.id };
-    }, `sendVoice to ${chatId}`);
+    return this.rateLimiter.execute(
+      async () => {
+        const resolved = await this.resolvePeer(chatId);
+        const file = opts.fileName ? new CustomFile(opts.fileName, (await stat(filePath)).size, filePath) : filePath;
+        // Duration is intentionally auto-detected by GramJS from the audio file —
+        // letting the AI override it would mis-report playback length in the Telegram UI.
+        const message = await client.sendFile(resolved, {
+          file,
+          voiceNote: true,
+          caption: opts.caption,
+          parseMode: opts.parseMode,
+          ...topicReplyOptions(opts.replyTo, opts.topicId),
+        });
+        return { id: message.id };
+      },
+      `sendVoice to ${chatId}`,
+      { retrySafe: false },
+    );
   }
 
   async sendVideoNote(
@@ -943,27 +1030,31 @@ export class TelegramService {
     filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     // pi-lens-ignore: sql-injection
-    return this.rateLimiter.execute(async () => {
-      const resolved = await this.resolvePeer(chatId);
-      const attributes =
-        opts.duration || opts.length
-          ? [
-              new Api.DocumentAttributeVideo({
-                roundMessage: true,
-                duration: opts.duration ?? 0,
-                w: opts.length ?? 0,
-                h: opts.length ?? 0,
-              }),
-            ]
-          : undefined;
-      const message = await client.sendFile(resolved, {
-        file: filePath,
-        videoNote: true,
-        ...topicReplyOptions(opts.replyTo, opts.topicId),
-        ...(attributes ? { attributes } : {}),
-      });
-      return { id: message.id };
-    }, `sendVideoNote to ${chatId}`);
+    return this.rateLimiter.execute(
+      async () => {
+        const resolved = await this.resolvePeer(chatId);
+        const attributes =
+          opts.duration || opts.length
+            ? [
+                new Api.DocumentAttributeVideo({
+                  roundMessage: true,
+                  duration: opts.duration ?? 0,
+                  w: opts.length ?? 0,
+                  h: opts.length ?? 0,
+                }),
+              ]
+            : undefined;
+        const message = await client.sendFile(resolved, {
+          file: filePath,
+          videoNote: true,
+          ...topicReplyOptions(opts.replyTo, opts.topicId),
+          ...(attributes ? { attributes } : {}),
+        });
+        return { id: message.id };
+      },
+      `sendVideoNote to ${chatId}`,
+      { retrySafe: false },
+    );
   }
 
   async sendContact(
@@ -980,6 +1071,7 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     // pi-lens-ignore: sql-injection
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
       const resolved = await this.resolvePeer(chatId);
       const media = new Api.InputMediaContact({
@@ -993,7 +1085,7 @@ export class TelegramService {
           peer: resolved,
           media,
           message: "",
-          randomId: generateRandomBigInt(),
+          randomId,
           replyTo: buildReplyTo(opts.replyTo, opts.topicId),
         }),
       );
@@ -1011,6 +1103,7 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     // pi-lens-ignore: sql-injection
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
       const resolved = await this.resolvePeer(chatId);
       const result = await client.invoke(
@@ -1018,7 +1111,7 @@ export class TelegramService {
           peer: resolved,
           media: new Api.InputMediaDice({ emoticon: emoji }),
           message: "",
-          randomId: generateRandomBigInt(),
+          randomId,
           replyTo: buildReplyTo(opts.replyTo, opts.topicId),
         }),
       );
@@ -1048,6 +1141,7 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     // pi-lens-ignore: sql-injection
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
       const resolved = await this.resolvePeer(chatId);
       const geoPoint = new Api.InputGeoPoint({
@@ -1068,7 +1162,7 @@ export class TelegramService {
           peer: resolved,
           media,
           message: "",
-          randomId: generateRandomBigInt(),
+          randomId,
           replyTo: buildReplyTo(opts.replyTo, opts.topicId),
         }),
       );
@@ -1095,6 +1189,7 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     // pi-lens-ignore: sql-injection
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
       const resolved = await this.resolvePeer(chatId);
       const media = new Api.InputMediaVenue({
@@ -1110,7 +1205,7 @@ export class TelegramService {
           peer: resolved,
           media,
           message: "",
-          randomId: generateRandomBigInt(),
+          randomId,
           replyTo: buildReplyTo(opts.replyTo, opts.topicId),
         }),
       );
@@ -1139,38 +1234,42 @@ export class TelegramService {
     }
     const client = this.client;
     // pi-lens-ignore: sql-injection
-    return this.rateLimiter.execute(async () => {
-      const resolved = await this.resolvePeer(chatId);
-      // Album-level caption lands on the first item; per-item captions stay as provided.
-      const captions = items.map((it, i) => (i === 0 ? (opts.caption ?? it.caption ?? "") : (it.caption ?? "")));
-      // Named items travel as CustomFile so Telegram gets the real name + MIME
-      // instead of `basename(tempPath)`. forceDocument is pinned for the whole
-      // album in that case: album members must be homogeneous, and extension-less
-      // temp paths already went out as documents — naming them must not silently
-      // promote images to compressed photos and break the grouping.
-      const named = items.some((it) => it.fileName);
-      const files = await Promise.all(
-        items.map(async (it) =>
-          it.fileName ? new CustomFile(it.fileName, (await stat(it.filePath)).size, it.filePath) : it.filePath,
-        ),
-      );
-      // GramJS sendFile auto-detects `file: string[]` and takes the _sendAlbum path,
-      // which invokes messages.UploadMedia per item + messages.SendMultiMedia.
-      const result = (await client.sendFile(resolved, {
-        file: files,
-        caption: captions,
-        ...(named ? { forceDocument: true } : {}),
-        parseMode: opts.parseMode,
-        ...topicReplyOptions(opts.replyTo, opts.topicId),
-      })) as unknown as Api.Message | Api.Message[] | undefined;
-      const ids = Array.isArray(result)
-        ? result.filter((m): m is Api.Message => m instanceof Api.Message).map((m) => m.id)
-        : result instanceof Api.Message
-          ? [result.id]
-          : [];
-      if (ids.length === 0) throw new Error("Telegram did not return any message IDs for sendAlbum");
-      return { ids };
-    }, `sendAlbum to ${chatId}`);
+    return this.rateLimiter.execute(
+      async () => {
+        const resolved = await this.resolvePeer(chatId);
+        // Album-level caption lands on the first item; per-item captions stay as provided.
+        const captions = items.map((it, i) => (i === 0 ? (opts.caption ?? it.caption ?? "") : (it.caption ?? "")));
+        // Named items travel as CustomFile so Telegram gets the real name + MIME
+        // instead of `basename(tempPath)`. forceDocument is pinned for the whole
+        // album in that case: album members must be homogeneous, and extension-less
+        // temp paths already went out as documents — naming them must not silently
+        // promote images to compressed photos and break the grouping.
+        const named = items.some((it) => it.fileName);
+        const files = await Promise.all(
+          items.map(async (it) =>
+            it.fileName ? new CustomFile(it.fileName, (await stat(it.filePath)).size, it.filePath) : it.filePath,
+          ),
+        );
+        // GramJS sendFile auto-detects `file: string[]` and takes the _sendAlbum path,
+        // which invokes messages.UploadMedia per item + messages.SendMultiMedia.
+        const result = (await client.sendFile(resolved, {
+          file: files,
+          caption: captions,
+          ...(named ? { forceDocument: true } : {}),
+          parseMode: opts.parseMode,
+          ...topicReplyOptions(opts.replyTo, opts.topicId),
+        })) as unknown as Api.Message | Api.Message[] | undefined;
+        const ids = Array.isArray(result)
+          ? result.filter((m): m is Api.Message => m instanceof Api.Message).map((m) => m.id)
+          : result instanceof Api.Message
+            ? [result.id]
+            : [];
+        if (ids.length === 0) throw new Error("Telegram did not return any message IDs for sendAlbum");
+        return { ids };
+      },
+      `sendAlbum to ${chatId}`,
+      { retrySafe: false },
+    );
   }
 
   async downloadMedia(chatId: string, messageId: number, downloadPath: string): Promise<string> {
@@ -1303,19 +1402,21 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const fetchLimit = filterType ? limit * 3 : limit;
     const dialogs = await this.client.getDialogs({ limit: fetchLimit, ...(offsetDate ? { offsetDate } : {}) });
-    const mapped = dialogs.map((d) => {
-      const type = d.isGroup ? "group" : d.isChannel ? "channel" : "private";
-      const isUser = d.entity instanceof Api.User;
-      return {
-        id: d.id?.toString() ?? "",
-        name: d.title ?? d.name ?? "Unknown",
-        type,
-        unreadCount: d.unreadCount,
-        ...(isUser
-          ? { isBot: Boolean((d.entity as Api.User).bot), isContact: Boolean((d.entity as Api.User).contact) }
-          : {}),
-      };
-    });
+    const mapped = dialogs
+      .filter((d) => this.toolPolicy.allowsChat(d.id?.toString() ?? ""))
+      .map((d) => {
+        const type = d.isGroup ? "group" : d.isChannel ? "channel" : "private";
+        const isUser = d.entity instanceof Api.User;
+        return {
+          id: d.id?.toString() ?? "",
+          name: d.title ?? d.name ?? "Unknown",
+          type,
+          unreadCount: d.unreadCount,
+          ...(isUser
+            ? { isBot: Boolean((d.entity as Api.User).bot), isContact: Boolean((d.entity as Api.User).contact) }
+            : {}),
+        };
+      });
     if (filterType === "contact_requests") {
       return mapped.filter((d) => d.type === "private" && d.isContact === false).slice(0, limit);
     }
@@ -1336,7 +1437,9 @@ export class TelegramService {
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const dialogs = await this.client.getDialogs({ limit: limit * 3 });
-    const unread = dialogs.filter((d) => d.unreadCount > 0).slice(0, limit);
+    const unread = dialogs
+      .filter((d) => d.unreadCount > 0 && this.toolPolicy.allowsChat(d.id?.toString() ?? ""))
+      .slice(0, limit);
     const results = await Promise.all(
       unread.map(async (d) => {
         const isUser = d.entity instanceof Api.User;
@@ -1821,6 +1924,14 @@ export class TelegramService {
     if (/^-?\d+$/.test(chatId)) return this.resolveNumericPeer(chatId);
     // Everything else — resolve display name via dialogs
     return this.resolveChat(chatId);
+  }
+
+  /** Signed peer identity; channels use -100… and basic groups use negative IDs. */
+  async canonicalChatId(chatId: string): Promise<string> {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const peer = await this.client.getInputEntity(await this.resolvePeer(chatId));
+    if (peer instanceof Api.InputPeerSelf) return (await this.getMe()).id;
+    return getPeerId(peer).toString();
   }
 
   /**
@@ -2760,7 +2871,7 @@ export class TelegramService {
             : {}),
         }),
         message: "",
-        randomId: bigInt(Math.floor(Math.random() * 1e15)),
+        randomId: generateRandomBigInt(),
       }),
     );
     // Extract message ID from result
@@ -3025,8 +3136,8 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const peer = await this.resolvePeer(chatId);
     const client = this.client;
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
-      const randomId = generateRandomBigInt();
       const params: Record<string, unknown> = { peer, msgId: messageId, count, randomId };
       if (opts?.private !== undefined) params.private = opts.private;
       // biome-ignore lint/suspicious/noExplicitAny: dynamic params for optional `private` field
@@ -5938,6 +6049,7 @@ export class TelegramService {
     filePath = await mediaPolicy().upload(filePath);
     const client = this.client;
     const peer = await this.resolvePeer(chatId);
+    const randomId = generateRandomBigInt();
     return this.rateLimiter.execute(async () => {
       const inputPeer = await client.getInputEntity(peer);
       const fileData = await readFile(filePath);
@@ -5971,7 +6083,7 @@ export class TelegramService {
           privacyRules,
           caption,
           ...(entities?.length ? { entities } : {}),
-          randomId: generateRandomBigInt(),
+          randomId,
           period: opts.period ?? 86400,
           pinned: opts.pinned,
           noforwards: opts.noforwards,

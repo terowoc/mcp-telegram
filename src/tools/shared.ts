@@ -11,8 +11,11 @@ export function sanitize(text: string): string {
 }
 
 /** Helper: success response — always sanitizes to prevent surrogate crashes */
-export function ok(text: string) {
-  return { content: [{ type: "text" as const, text: sanitize(text) }] };
+export function ok(text: string, structuredContent?: Record<string, unknown>) {
+  return {
+    content: [{ type: "text" as const, text: sanitize(text) }],
+    ...(structuredContent ? { structuredContent } : {}),
+  };
 }
 
 /** Helper: error response with isError flag */

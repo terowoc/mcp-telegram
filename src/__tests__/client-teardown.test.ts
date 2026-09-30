@@ -159,3 +159,67 @@ describe("clearSession() destroys the client instead of orphaning it", () => {
     assert.strictEqual((service as unknown as Internals).client, null);
   });
 });
+
+describe("connection lifecycle concurrency", () => {
+  it("refuses a second QR flow before it can replace the first client", async () => {
+    let connects = 0;
+    let release!: () => void;
+    proto.connect = async () => {
+      connects++;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    };
+    const service = makeService();
+    const abort = new AbortController();
+    const first = service.startQrLogin(() => {}, undefined, abort.signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = await service.startQrLogin(() => {}, undefined, abort.signal);
+    assert.strictEqual(second.success, false);
+    assert.match(second.message, /already in progress/);
+    assert.strictEqual(connects, 1);
+    abort.abort();
+    release();
+    assert.strictEqual((await first).success, false);
+    await service.disconnect();
+  });
+  it("concurrent connect calls create one Telegram client", async () => {
+    let connects = 0;
+    let release!: () => void;
+    proto.connect = async () => {
+      connects++;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    };
+    const service = makeService();
+    const first = service.connect();
+    const second = service.connect();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(connects, 1);
+    release();
+    assert.deepStrictEqual(await Promise.all([first, second]), [true, true]);
+    await service.disconnect();
+  });
+
+  it("disconnect waits for a connecting client and does not leave it adopted", async () => {
+    let release!: () => void;
+    proto.connect = async () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const service = makeService();
+    const connect = service.connect();
+    await new Promise((resolve) => setImmediate(resolve));
+    let disconnected = false;
+    const disconnect = service.disconnect().then(() => {
+      disconnected = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(disconnected, false, "teardown cannot complete while connect is live");
+    release();
+    await Promise.all([connect, disconnect]);
+    assert.strictEqual((service as unknown as Internals).client, null);
+    assert.strictEqual((service as unknown as Internals).connected, false);
+  });
+});

@@ -4,76 +4,145 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { GlobalLock } from "./global-lock.js";
 import {
   encodeMessage,
+  IpcDecoder,
   type IpcLoginStart,
   type IpcMessage,
   type IpcToolRequest,
   type IpcToolResponse,
   type McpServerInternal,
-  parseMessages,
 } from "./ipc-protocol.js";
-import { releaseLock, releaseSocket, socketPath } from "./lock.js";
+import { lockPath, releaseLock, releaseSocket, socketPath } from "./lock.js";
 import { TelegramService } from "./telegram-client.js";
+import { ToolExecutor } from "./tool-executor.js";
+import { ToolPolicy } from "./tool-policy.js";
 import { registerTools } from "./tools/index.js";
+import { ok } from "./tools/shared.js";
 
-// Ceiling for a single tool call inside the master. Must stay just under the client's
-// IPC_CALL_TIMEOUT_MS (30s, src/client.ts): past that the caller has already given up, so
-// nothing is lost by abandoning the call — but without this the master stays wedged. A call
-// issued on a dead MTProto client never settles, and because handleToolRequest holds
-// globalLock for its whole duration, one stuck call blocks every tool call from every
-// connected client, not just its own (issue #71).
 const TOOL_CALL_TIMEOUT_MS = 28_000;
+const MAX_SOCKET_QUEUE = 64;
 
 let cleanedUp = false;
+let ownedPaths: { lock: string; socket: string } | undefined;
 
 function cleanup() {
-  if (cleanedUp) return;
+  if (cleanedUp || !ownedPaths) return;
   cleanedUp = true;
   // Sync unlink only — process.exit handlers cannot await async server.close(),
   // and unlinking the socket file is sufficient to release the listening address.
-  releaseLock();
-  releaseSocket();
+  releaseSocket(ownedPaths.socket, ownedPaths.lock);
+  releaseLock(ownedPaths.lock);
 }
 
 process.on("exit", cleanup);
 
-// Serializes tool calls with QR login — login holds the lock for up to minutes,
-// tool calls queue behind it. Prevents tool calls from running against a stale
-// Telegram client mid-relogin.
-const globalLock = new GlobalLock();
-
-// Only one concurrent QR login — second call sees this set and returns error
-// instead of invalidating the just-adopted session.
 type ActiveLogin = { socket: Socket; abort: AbortController };
-let activeLogin: ActiveLogin | null = null;
+type Dispatch = {
+  lock: GlobalLock;
+  executor: ToolExecutor;
+  loginExecutor: ToolExecutor;
+  loginAllowed: boolean;
+  activeLogin: ActiveLogin | null;
+};
+const dispatches = new WeakMap<McpServerInternal, Dispatch>();
 
-/**
- * Resolve to the handler's result, or reject once `ms` elapses.
- *
- * The underlying promise is left running — it cannot be cancelled — but it no longer holds
- * globalLock or the client's response, so the daemon keeps serving. The timer is unref'd so
- * a pending timeout never keeps the process alive on shutdown.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Tool call timed out after ${ms}ms: ${label}`)), ms);
-    timer.unref?.();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
+function diagnosticResult(dispatch: Dispatch, telegram: TelegramService) {
+  const status = {
+    owner: dispatch.executor.isSettling() || dispatch.loginExecutor.isSettling() ? "settling" : "ready",
+    telegram: telegram.diagnostics?.() ?? { connected: false },
+    executor: dispatch.executor.diagnostics(),
+    login: dispatch.loginExecutor.diagnostics(),
+  };
+  return ok(JSON.stringify(status), status);
 }
 
 export interface HandleClientOptions {
-  /** Override the per-call ceiling. Exists so tests can exercise the timeout path without
-   *  waiting out the 28s production budget; production callers use the default. */
   toolCallTimeoutMs?: number;
+  settlementGraceMs?: number;
+  /** Production fail-stop: the supervisor replaces an owner with a stuck operation. */
+  onStuck?: () => void;
+}
+
+function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, opts: HandleClientOptions): Dispatch {
+  const existing = dispatches.get(mcpServer);
+  if (existing) return existing;
+  const lock = new GlobalLock();
+  const policy = new ToolPolicy();
+  // Snapshot original callbacks before owner stdio is wired through this same executor.
+  const tools = Object.fromEntries(
+    Object.entries(mcpServer._registeredTools).map(([name, tool]) => [name, { ...tool }]),
+  );
+  const executor = new ToolExecutor({
+    tools,
+    lock,
+    timeoutMs: opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS,
+    onTimeout: (name) => telegram.markUnhealthy?.(`tool call timed out: ${name}`),
+    onStuck: opts.onStuck,
+    settlementGraceMs: opts.settlementGraceMs,
+    authorize: async (name, args) => {
+      if (name === "telegram-logout") await telegram.cancelQrLogin?.();
+      return policy.authorize(name, args, async (id) => {
+        if (!(await telegram.ensureConnected())) throw new Error("Telegram is not connected");
+        return telegram.canonicalChatId(id);
+      });
+    },
+  });
+  const loginExecutor = new ToolExecutor({
+    lock,
+    timeoutMs: 360_000,
+    onStuck: opts.onStuck,
+    settlementGraceMs: opts.settlementGraceMs,
+    onTimeout: () => telegram.markUnhealthy?.("QR login timed out"),
+    tools: {
+      login_start: {
+        handler: async (_args, extra) => {
+          const socket = extra.socket as Socket;
+          const id = extra.id as string;
+          const signal = extra.signal as AbortSignal;
+          const result = await telegram.startQrLogin(
+            () => {},
+            (url) => send(socket, { type: "login_qr", id, url }),
+            signal,
+          );
+          signal.throwIfAborted();
+          if (!result.success) return { success: false, error: result.message };
+          const me = await telegram.getMe();
+          return { success: true, username: me.username ?? undefined };
+        },
+      },
+    },
+  });
+  const dispatch: Dispatch = {
+    lock,
+    executor,
+    loginExecutor,
+    loginAllowed: !!tools["telegram-login"] && tools["telegram-login"].enabled !== false,
+    activeLogin: null,
+  };
+  dispatches.set(mcpServer, dispatch);
+  return dispatch;
+}
+
+/** Stdio and IPC execute the captured handlers through one owner queue. */
+export function wireOwnerExecutor(
+  mcpServer: McpServerInternal,
+  telegram: TelegramService,
+  opts: HandleClientOptions = {},
+) {
+  const dispatch = dispatchFor(mcpServer, telegram, opts);
+  for (const [name, tool] of Object.entries(mcpServer._registeredTools)) {
+    tool.handler = (args, extra) => {
+      if (name === "telegram-doctor") return Promise.resolve(diagnosticResult(dispatch, telegram));
+      if (dispatch.loginExecutor.isSettling())
+        return Promise.reject(new Error("Telegram executor unavailable: QR operation is still settling"));
+      if (name === "telegram-logout") dispatch.activeLogin?.abort.abort();
+      const context = extra ?? (tool.inputSchema ? {} : args);
+      return dispatch.executor.call(name, tool.inputSchema ? args : {}, {
+        extra: context,
+        signal: context?.signal as AbortSignal | undefined,
+      });
+    };
+  }
+  return dispatch.executor;
 }
 
 export function handleClient(
@@ -82,124 +151,146 @@ export function handleClient(
   telegram: TelegramService,
   opts: HandleClientOptions = {},
 ) {
-  const toolCallTimeoutMs = opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS;
-  let buf = "";
+  const dispatch = dispatchFor(mcpServer, telegram, opts);
+  const decoder = new IpcDecoder();
   let processing = false;
-  const queue: IpcMessage[] = [];
+  const queue: (IpcToolRequest | IpcLoginStart)[] = [];
+  const requests = new Map<string, AbortController>();
 
-  // Per-socket FIFO: messages from one client execute in arrival order.
-  // Parallelism across DIFFERENT clients is enforced by globalLock (acquired per handler),
-  // not here — a tool call from client A can proceed while client B is in login flow.
   async function drainQueue() {
     if (processing) return;
     processing = true;
-    while (queue.length > 0) {
-      const msg = queue.shift();
-      if (!msg) break;
-      if (msg.type === "tool") {
-        await handleToolRequest(socket, msg, mcpServer, telegram, toolCallTimeoutMs);
-      } else if (msg.type === "login_start") {
-        await handleLoginStart(socket, msg, telegram);
+    try {
+      while (queue.length > 0 && !socket.destroyed) {
+        const msg = queue.shift();
+        if (!msg) break;
+        const controller = requests.get(msg.id);
+        if (!controller) continue;
+        try {
+          if (msg.type === "tool") await handleToolRequest(socket, msg, dispatch, controller.signal);
+          else await handleLoginStart(socket, msg, telegram, dispatch, controller);
+        } finally {
+          requests.delete(msg.id);
+        }
       }
-      // Responses and QR frames are master→client only — client-side messages ignored here
+    } finally {
+      processing = false;
     }
-    processing = false;
   }
 
   socket.on("data", (chunk) => {
-    buf += chunk.toString("utf-8");
-    const { messages, remaining } = parseMessages(buf);
-    buf = remaining;
-    for (const msg of messages) queue.push(msg);
-    drainQueue();
-  });
-
-  // If this socket owned an in-progress QR login, abort it so globalLock
-  // releases and tool calls from other clients aren't blocked for minutes.
-  socket.on("close", () => {
-    if (activeLogin && activeLogin.socket === socket) {
-      activeLogin.abort.abort();
+    let messages: IpcMessage[];
+    try {
+      messages = decoder.push(chunk);
+    } catch {
+      socket.destroy();
+      return;
     }
+    for (const msg of messages) {
+      if (msg.type === "cancel") {
+        requests.get(msg.id)?.abort(new Error("Tool request cancelled"));
+        continue;
+      }
+      if (msg.type !== "tool" && msg.type !== "login_start") continue;
+      if (msg.type === "tool" && msg.tool === "telegram-doctor") {
+        send(socket, { type: "tool_response", id: msg.id, result: diagnosticResult(dispatch, telegram) });
+        continue;
+      }
+      if (requests.has(msg.id)) {
+        socket.destroy();
+        return;
+      }
+      if (requests.size >= MAX_SOCKET_QUEUE) {
+        if (msg.type === "tool")
+          send(socket, { type: "tool_response", id: msg.id, error: "Tool queue is full; try again later" });
+        else
+          send(socket, {
+            type: "login_done",
+            id: msg.id,
+            success: false,
+            error: "Tool queue is full; try again later",
+          });
+        continue;
+      }
+      const controller = new AbortController();
+      requests.set(msg.id, controller);
+      // Capture the ceiling on receipt, before this socket's FIFO or QR wait.
+      if (msg.type === "tool") {
+        msg.deadlineAt = Math.min(
+          msg.deadlineAt ?? Infinity,
+          Date.now() + (opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS),
+        );
+        if (msg.tool === "telegram-logout") dispatch.activeLogin?.abort.abort();
+      }
+      queue.push(msg);
+    }
+    void drainQueue();
   });
-
-  // Node requires an error listener on sockets. EPIPE/ECONNRESET happen when the peer
-  // disappears mid-write; log for diagnostics but don't crash the master.
-  socket.on("error", (err) => {
-    console.error("[mcp-telegram] IPC socket error:", err.message);
+  socket.on("close", () => {
+    for (const controller of requests.values()) controller.abort(new Error("IPC connection closed"));
+    queue.length = 0;
+    requests.clear();
   });
+  socket.on("error", () => {});
 }
 
 function send(socket: Socket, msg: IpcMessage): void {
-  if (!socket.destroyed) socket.write(encodeMessage(msg));
+  if (socket.destroyed) return;
+  try {
+    socket.write(encodeMessage(msg));
+  } catch {
+    socket.destroy();
+  }
 }
 
-async function handleToolRequest(
-  socket: Socket,
-  req: IpcToolRequest,
-  mcpServer: McpServerInternal,
-  telegram: TelegramService,
-  timeoutMs: number = TOOL_CALL_TIMEOUT_MS,
-) {
-  const tool = mcpServer._registeredTools[req.tool];
+async function handleToolRequest(socket: Socket, req: IpcToolRequest, dispatch: Dispatch, signal: AbortSignal) {
   const response: IpcToolResponse = { type: "tool_response", id: req.id };
-
-  if (!tool) {
-    response.error = `Unknown tool: ${req.tool}`;
-  } else {
-    // telegram-logout must cancel an in-progress QR login instead of queueing behind it
-    // for up to 5 minutes. Aborting releases the globalLock held by handleLoginStart.
-    if (req.tool === "telegram-logout" && activeLogin) {
-      activeLogin.abort.abort();
-    }
-    const unlock = await globalLock.acquire();
-    try {
-      response.result = await withTimeout(tool.handler(req.args ?? {}, {}), timeoutMs, req.tool);
-    } catch (err) {
-      response.error = err instanceof Error ? err.message : String(err);
-      // A call that burns the whole budget is the signature of a dead MTProto transport that
-      // our cached `connected` flag still reports as live. Flag it so the NEXT call
-      // revalidates and reconnects, instead of every subsequent call hanging the same way.
-      if (err instanceof Error && err.message.startsWith("Tool call timed out")) {
-        console.error(`[mcp-telegram] ${err.message} — marking Telegram connection unhealthy`);
-        telegram.markUnhealthy(`tool call timed out: ${req.tool}`);
-      }
-    } finally {
-      unlock();
-    }
+  try {
+    if (dispatch.loginExecutor.isSettling())
+      throw new Error("Telegram executor unavailable: QR operation is still settling");
+    response.result = await dispatch.executor.call(req.tool, req.args, { signal, deadlineAt: req.deadlineAt });
+  } catch (error) {
+    response.error = (error instanceof Error ? error.message : String(error)).slice(0, 2048);
   }
-
   send(socket, response);
 }
 
-async function handleLoginStart(socket: Socket, req: IpcLoginStart, telegram: TelegramService) {
-  const fail = (error: string) => send(socket, { type: "login_done", id: req.id, success: false, error });
-
-  if (activeLogin) {
+async function handleLoginStart(
+  socket: Socket,
+  req: IpcLoginStart,
+  _telegram: TelegramService,
+  dispatch: Dispatch,
+  abort: AbortController,
+) {
+  const fail = (error: string) =>
+    send(socket, { type: "login_done", id: req.id, success: false, error: error.slice(0, 2048) });
+  if (!dispatch.loginAllowed) {
+    fail("Authentication writes are disabled by the owner profile");
+    return;
+  }
+  if (dispatch.activeLogin) {
     fail("Another QR login is already in progress");
     return;
   }
-
-  const abort = new AbortController();
-  activeLogin = { socket, abort };
-  const unlock = await globalLock.acquire();
+  if (dispatch.executor.isSettling() || dispatch.loginExecutor.isSettling()) {
+    fail("Telegram executor unavailable: previous operation is still settling");
+    return;
+  }
+  dispatch.activeLogin = { socket, abort };
   try {
-    const result = await telegram.startQrLogin(
-      () => {},
-      (url) => send(socket, { type: "login_qr", id: req.id, url }),
-      abort.signal,
-    );
-
-    if (result.success) {
-      const me = await telegram.getMe();
-      send(socket, { type: "login_done", id: req.id, success: true, username: me.username ?? undefined });
-    } else {
-      fail(result.message);
-    }
-  } catch (err) {
-    fail(err instanceof Error ? err.message : String(err));
+    const result = (await dispatch.loginExecutor.call(
+      "login_start",
+      {},
+      {
+        signal: abort.signal,
+        extra: { socket, id: req.id },
+      },
+    )) as { success: boolean; error?: string; username?: string };
+    send(socket, { type: "login_done", id: req.id, ...result });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   } finally {
-    activeLogin = null;
-    unlock();
+    dispatch.activeLogin = null;
   }
 }
 
@@ -208,6 +299,8 @@ export interface OwnerHandle {
   srv: Server;
   gracefulExit: () => Promise<void>;
   beforeShutdown?: () => Promise<void>;
+  executor: ToolExecutor;
+  isHealthy: () => boolean;
 }
 
 /**
@@ -226,11 +319,18 @@ export async function startOwner(
   const server = new McpServer({ name: "mcp-telegram", version });
   registerTools(server, telegram);
   const mcpServer = server as unknown as McpServerInternal;
+  const executor = wireOwnerExecutor(mcpServer, telegram, {
+    onStuck: () => {
+      console.error(`[${label}] Timed-out operation did not settle; terminating owner for safe recovery`);
+      process.exit(1);
+    },
+  });
+  ownedPaths = { lock: lockPath(), socket: socketPath() };
 
   // Remove a stale socket file from a previous crash before attempting to listen.
   releaseSocket();
 
-  const sock = socketPath();
+  const sock = ownedPaths.socket;
   const srv = createServer((socket) => {
     console.error(`[${label}] client connected`);
     socket.on("close", () => console.error(`[${label}] client disconnected`));
@@ -255,7 +355,13 @@ export async function startOwner(
   console.error(`[${label}] IPC socket ready: ${sock}`);
 
   let shuttingDown = false;
-  const handle: OwnerHandle = { server, srv, gracefulExit: async () => {} };
+  const handle: OwnerHandle = {
+    server,
+    srv,
+    executor,
+    gracefulExit: async () => {},
+    isHealthy: () => !executor.isSettling() && !dispatchFor(mcpServer, telegram, {}).loginExecutor.isSettling(),
+  };
   const gracefulExit = async () => {
     if (shuttingDown) return;
     shuttingDown = true;

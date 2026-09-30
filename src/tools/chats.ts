@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
 
@@ -9,7 +10,7 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
     {
       description: "List Telegram chats with unread counts, type indicators, and contact status",
       inputSchema: {
-        limit: z.number().default(20).describe("Number of chats to return"),
+        limit: pageLimit(20).describe("Number of chats to return"),
         offsetDate: z.number().optional().describe("Unix timestamp offset for pagination"),
         filterType: z
           .enum(["private", "group", "channel", "contact_requests"])
@@ -47,7 +48,7 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
         "Search for Telegram chats, users, or channels by name or username. Returns description and member count",
       inputSchema: {
         query: z.string().describe("Search query (name or username)"),
-        limit: z.number().default(10).describe("Max results"),
+        limit: pageLimit(10).describe("Max results"),
       },
       annotations: READ_ONLY,
     },
@@ -106,7 +107,7 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
       description: "Get members of a Telegram group or channel",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        limit: z.number().default(50).describe("Number of members to return"),
+        limit: pageLimit(50).describe("Number of members to return"),
       },
       annotations: READ_ONLY,
     },

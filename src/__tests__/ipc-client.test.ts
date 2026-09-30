@@ -54,6 +54,31 @@ describe("IpcClient.connect()", () => {
 });
 
 describe("IpcClient.call()", () => {
+  it("forwards cancellation and deadlines without leaving a pending call", async () => {
+    const fake = new FakeSocket();
+    const client = makeClient(fake);
+    setImmediate(() => fake.emit("connect"));
+    await client.connect();
+    const abort = new AbortController();
+    const start = Date.now();
+    const call = client.call("write", {}, { signal: abort.signal });
+    const request = JSON.parse(fake.written[0]);
+    assert.ok(request.deadlineAt > start && request.deadlineAt <= start + 200);
+    abort.abort(new Error("cancelled by caller"));
+    await assert.rejects(call, /cancelled by caller/);
+    assert.deepStrictEqual(JSON.parse(fake.written[1]), { type: "cancel", id: request.id });
+    client.destroy();
+  });
+
+  it("rejects oversized calls before allocating a pending timer", async () => {
+    const fake = new FakeSocket();
+    const client = makeClient(fake);
+    setImmediate(() => fake.emit("connect"));
+    await client.connect();
+    await assert.rejects(client.call("large", { data: "x".repeat(5 * 1048576) }), /frame|size/i);
+    assert.strictEqual(fake.written.length, 0);
+    client.destroy();
+  });
   it("throws if not connected", async () => {
     const fake = new FakeSocket();
     const client = makeClient(fake);

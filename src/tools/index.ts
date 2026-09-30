@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServerInternal } from "../ipc-protocol.js";
 import type { TelegramService } from "../telegram-client.js";
+import { applyToolProfile } from "../tool-policy.js";
 import { registerAccountTools } from "./account.js";
 import { registerAuthTools } from "./auth.js";
 import { registerBoostTools } from "./boosts.js";
@@ -20,6 +22,7 @@ import { registerStarsTools } from "./stars.js";
 import { registerStickerTools } from "./stickers.js";
 import { registerStoryTools } from "./stories.js";
 import { registerTranscribeTools } from "./transcribe.js";
+import { registerWorkflowTools } from "./workflows.js";
 
 export function registerTools(server: McpServer, telegram: TelegramService) {
   registerAuthTools(server, telegram);
@@ -42,4 +45,6 @@ export function registerTools(server: McpServer, telegram: TelegramService) {
   registerStarsTools(server, telegram);
   registerQuickRepliesTools(server, telegram);
   registerMusicTools(server, telegram);
+  registerWorkflowTools(server, telegram);
+  applyToolProfile(server as unknown as McpServerInternal);
 }

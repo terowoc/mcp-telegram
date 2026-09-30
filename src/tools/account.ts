@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
 import {
   ABSOLUTE_PATH_ERROR,
@@ -292,7 +293,7 @@ export function registerAccountTools(server: McpServer, telegram: TelegramServic
         "Get list of invite links for a group or channel. By default returns links created by the current account; pass adminId to query another admin's links",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        limit: z.number().default(20).describe("Max links to return"),
+        limit: pageLimit(20).describe("Max links to return"),
         adminId: z
           .string()
           .optional()
@@ -414,7 +415,7 @@ export function registerAccountTools(server: McpServer, telegram: TelegramServic
       description:
         "Get Saved Messages dialogs (Telegram's per-sender grouping of messages forwarded to your Saved Messages)",
       inputSchema: {
-        limit: z.number().int().positive().default(20).describe("Max dialogs to return"),
+        limit: pageLimit(20).describe("Max dialogs to return"),
       },
       annotations: READ_ONLY,
     },
