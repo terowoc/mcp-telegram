@@ -1,7 +1,7 @@
 import type { GatewayIdentity } from "../http/identity.js";
 import type { McpRegisteredTool } from "../ipc-protocol.js";
 import { ToolPolicy } from "../tool-policy.js";
-import type { SaasAuth } from "./auth.js";
+import { hashOpaqueToken, type SaasAuth } from "./auth.js";
 import type { SaasStore } from "./store.js";
 import type { WorkerSupervisor } from "./supervisor.js";
 
@@ -73,6 +73,10 @@ export function createSaasIdentity(
     consentBinding: (id) => {
       const user = id ? active(id) : undefined;
       return user ? `${user.id}:${user.policy.version}` : "inactive";
+    },
+    authenticationBinding: (id) => {
+      const user = active(id);
+      return user ? `urn:tg-bridge:credential:${hashOpaqueToken(user.passwordHash)}` : undefined;
     },
     describeAccess: (id) => {
       const user = id ? active(id) : undefined;

@@ -24,6 +24,7 @@ export interface SaasConfig {
   maxWorkers?: number;
   port?: number;
   webRoot?: string;
+  allowedOrigins?: string[];
 }
 function validate(config: SaasConfig): SaasConfig {
   const url = new URL(config.publicUrl);
@@ -40,6 +41,10 @@ function validate(config: SaasConfig): SaasConfig {
     throw new Error("Invalid SaaS worker capacity");
   if (!Number.isSafeInteger(config.port ?? 3000) || (config.port ?? 3000) < 1 || (config.port ?? 3000) > 65535)
     throw new Error("Invalid MCP_HTTP_PORT");
+  for (const origin of config.allowedOrigins ?? []) {
+    const allowed = new URL(origin);
+    if (allowed.protocol !== "https:" || allowed.origin !== origin) throw new Error("Invalid MCP allowed origin");
+  }
   return config;
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig {
@@ -65,6 +70,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     maxWorkers: Number(env.MCP_SAAS_MAX_WORKERS ?? 4),
     port: Number(env.MCP_HTTP_PORT ?? 3000),
     webRoot: env.MCP_WEB_ROOT,
+    allowedOrigins: env.MCP_ALLOWED_ORIGINS?.split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
     version: env.npm_package_version ?? "1.43.1",
   });
 }
@@ -100,6 +108,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
       identity: createSaasIdentity(store, auth, supervisor),
       isHealthy: () => !closing,
       trustProxy: 1,
+      allowedOrigins: config.allowedOrigins,
     });
   } catch (error) {
     await supervisor.close();

@@ -21,14 +21,17 @@ afterEach(() => vi.useRealTimers());
 describe('ephemeral MCP panel lifecycle', () => {
   it('recovery confirms a new password and clears that confirmation on close', async () => {
     const request = vi.fn((path) => path.endsWith('/me')
-      ? Promise.reject(new McpApiError(401, 'authentication-required')) : Promise.resolve({ ok: true }));
+      ? Promise.reject(new McpApiError(401, 'authentication-required'))
+      : Promise.resolve({ ok: true, recoveryCodes: ['replacement-private-code'] }));
     const controller = new McpPanelController({ request });
     await controller.show();
     await controller.recover('alice', 'single-use-code', 'a new private login password');
     expect(controller.getState().isRecovered).toBe(true);
+    expect(controller.getState().recoveryCodes).toEqual(['replacement-private-code']);
     expect(controller.getState().me).toBeUndefined();
     controller.hide();
     expect(controller.getState().isRecovered).toBeUndefined();
+    expect(controller.getState().recoveryCodes).toBeUndefined();
   });
   it('blocks registration until the initial cookie check settles', async () => {
     let reject: (error: unknown) => void;

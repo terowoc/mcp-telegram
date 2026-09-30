@@ -305,3 +305,50 @@ test("a policy changed after the consent page requires a fresh displayed consent
     await s.close();
   }
 });
+
+test("recovery fences remembered OAuth cookies and already displayed consent", async () => {
+  const s = await setup();
+  try {
+    const a = await s.authorize("alice");
+    async function consent() {
+      let response = await a.request(
+        "/oauth/auth?" +
+          new URLSearchParams({
+            client_id: a.client.client_id,
+            redirect_uri: "https://client.example/callback",
+            response_type: "code",
+            scope: "mcp:tools",
+            resource: `${origin}/mcp`,
+            code_challenge: createHash("sha256").update("x".repeat(43)).digest("base64url"),
+            code_challenge_method: "S256",
+            prompt: "consent",
+          }),
+      );
+      for (let i = 0; i < 8; i++) {
+        const location = response.headers.get("location");
+        assert.ok(location);
+        const url = new URL(location, origin);
+        assert.equal(url.origin, origin);
+        response = await a.request(url.pathname + url.search);
+        if (url.pathname.startsWith("/interaction/") && response.status === 200)
+          return { path: url.pathname, html: await response.text() };
+      }
+      throw new Error("No interaction");
+    }
+    const stale = await consent();
+    assert.match(stale.html, />Разрешить доступ<\/button>/);
+    assert.ok(await s.auth.recover("alice", s.alice.recoveryCodes[0], "a new recovered account password"));
+    const csrf = /name="csrf" value="([^"]+)"/.exec(stale.html)?.[1];
+    assert.ok(csrf);
+    const posted = await a.request(stale.path, {
+      method: "POST",
+      headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, approve: "yes" }),
+    });
+    assert.ok(posted.status >= 400, "Old consent cannot mint another grant after recovery");
+    const fresh = await consent();
+    assert.match(fresh.html, /autocomplete="current-password"/, "Old OAuth cookie requires fresh password");
+  } finally {
+    await s.close();
+  }
+});

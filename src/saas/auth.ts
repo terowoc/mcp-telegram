@@ -61,14 +61,17 @@ export class SaasAuth {
     return { ...session, csrfToken: this.csrf(sessionToken) };
   }
 
-  async recover(login: string, code: string, newPassword: string): Promise<boolean> {
+  async recover(login: string, code: string, newPassword: string): Promise<{ recoveryCodes: string[] } | undefined> {
     try {
       normalizeLogin(login);
-      if (!/^[A-Za-z0-9_-]{43}$/.test(code)) return false;
+      if (!/^[A-Za-z0-9_-]{43}$/.test(code)) return undefined;
       const passwordHash = await hashPassword(newPassword);
-      return this.store.consumeRecovery(login, hashOpaqueToken(code), passwordHash);
+      const recoveryCodes = Array.from({ length: 8 }, opaqueToken);
+      return this.store.consumeRecovery(login, hashOpaqueToken(code), passwordHash, recoveryCodes.map(hashOpaqueToken))
+        ? { recoveryCodes }
+        : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 

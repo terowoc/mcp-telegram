@@ -111,7 +111,7 @@ export class SaasStore {
     );
   }
 
-  consumeRecovery(login: string, codeHash: string, newPasswordHash: string): boolean {
+  consumeRecovery(login: string, codeHash: string, newPasswordHash: string, replacements: string[] = []): boolean {
     return this.transaction(() => {
       const user = this.findByLogin(login);
       if (
@@ -122,6 +122,8 @@ export class SaasStore {
         return false;
       this.db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(newPasswordHash, user.id);
       this.db.prepare("DELETE FROM recovery WHERE user_id=?").run(user.id);
+      for (const hash of replacements)
+        this.db.prepare("INSERT INTO recovery(user_id,code_hash) VALUES(?,?)").run(user.id, hash);
       this.revokeUserSessions(user.id);
       this.revokeUserGrants(user.id);
       return true;

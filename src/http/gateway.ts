@@ -45,7 +45,9 @@ export async function createHttpGateway(options: GatewayOptions) {
   const resource = `${origin}/mcp`;
   const issuer = `${origin}/oauth`;
   const secrets = await loadOrCreateSecrets(options.storageDir);
-  const Adapter = createAdapter(join(options.storageDir, "oauth.sqlite"));
+  const Adapter = createAdapter(join(options.storageDir, "oauth.sqlite"), {
+    authenticationBinding: identity.authenticationBinding,
+  });
   const config: Configuration = {
     adapter: Adapter,
     jwks: secrets.jwks,
@@ -253,7 +255,7 @@ export async function createHttpGateway(options: GatewayOptions) {
         await provider.interactionFinished(
           req,
           res,
-          { login: { accountId, remember: true } },
+          { login: { accountId, remember: true, acr: identity.authenticationBinding?.(accountId) } },
           { mergeWithLastSubmission: false },
         );
       } else if (interaction.prompt.name === "consent") {

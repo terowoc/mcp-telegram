@@ -18,6 +18,7 @@ export interface GatewayIdentity {
   ): Promise<unknown>;
   describeAccess(accountId?: string): string;
   consentBinding?(accountId?: string): string;
+  authenticationBinding?(accountId: string): string | undefined;
 }
 export function ownerIdentity(options: {
   ownerPasswordHash: string;

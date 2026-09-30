@@ -102,14 +102,14 @@ export class McpPanelController {
 
   async recover(login: string, recoveryCode: string, newPassword: string) {
     await this.mutate(async (epoch) => {
-      await this.perform(
+      const result = await this.perform<{ recoveryCodes: string[] }>(
         '/api/saas/recover',
         { method: 'POST', body: { login, recoveryCode, newPassword } },
         epoch,
       );
       if (this.isCurrent(epoch)) {
         this.resetState();
-        this.updateState({ isRecovered: true });
+        this.updateState({ isRecovered: true, recoveryCodes: result?.recoveryCodes });
       }
     });
   }

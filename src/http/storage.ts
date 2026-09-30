@@ -7,7 +7,10 @@ type Payload = Record<string, unknown>;
 type Row = { data: string; expires: number | null };
 
 /** Persistent adapter shared by all oidc-provider models in this process. */
-export function createAdapter(path: string): { new (model: string): Adapter; close(): void } {
+export function createAdapter(
+  path: string,
+  options: { authenticationBinding?: (accountId: string) => string | undefined } = {},
+): { new (model: string): Adapter; close(): void } {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   chmodSync(path, 0o600);
@@ -24,11 +27,28 @@ export function createAdapter(path: string): { new (model: string): Adapter; clo
   return class SqliteAdapter {
     constructor(private model: string) {}
 
+    private isAuthenticationCurrent(payload: Payload): boolean {
+      // OIDC auth context survives persisted sessions, interactions and token issuance.
+      // A credential reset changes its opaque binding, including across gateway restarts.
+      if (
+        !options.authenticationBinding ||
+        !["Session", "Interaction", "AuthorizationCode", "RefreshToken"].includes(this.model)
+      )
+        return true;
+      const session = payload.session as Payload | undefined;
+      const login = (payload.result as { login?: Payload } | undefined)?.login;
+      const binding = this.model === "Interaction" ? (login ?? session) : payload;
+      if (!binding || typeof binding.accountId !== "string") return true;
+      const current = options.authenticationBinding(binding.accountId);
+      return !!current && binding.acr === current;
+    }
+
     static close(): void {
       db.close();
     }
 
     async upsert(id: string, payload: Payload, expiresIn?: number): Promise<void> {
+      if (!this.isAuthenticationCurrent(payload)) throw new Error("Authentication session expired");
       db.prepare("DELETE FROM oauth WHERE expires IS NOT NULL AND expires <= ?").run(Math.floor(Date.now() / 1000));
       const count = db.prepare("SELECT count(*) AS n FROM oauth").get() as { n: number };
       if (count.n >= 10_000 && !(await this.find(id))) throw new Error("OAuth storage limit reached");
@@ -52,7 +72,8 @@ export function createAdapter(path: string): { new (model: string): Adapter; clo
         | Row
         | undefined;
       if (!row || (row.expires !== null && row.expires <= Math.floor(Date.now() / 1000))) return undefined;
-      return JSON.parse(row.data) as Payload;
+      const payload = JSON.parse(row.data) as Payload;
+      return this.isAuthenticationCurrent(payload) ? payload : undefined;
     }
 
     async find(id: string): Promise<Payload | undefined> {

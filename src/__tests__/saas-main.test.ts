@@ -219,3 +219,28 @@ test("worker capacity returns a bounded response while HTTP health stays availab
     await rm(s.root, { recursive: true, force: true });
   }
 });
+
+test("SaaS forwards configured external MCP origins and rejects unlisted origins", async () => {
+  const s = await setup();
+  const env = {
+    MCP_PUBLIC_URL: origin,
+    MCP_AUTH_DIR: s.config.authDir,
+    MCP_SESSION_KEY_FILE: s.config.sessionKeyFile,
+    MCP_TELEGRAM_FILE_ROOT: s.config.filesRoot,
+    TELEGRAM_API_ID: "1",
+    TELEGRAM_API_HASH: "a".repeat(32),
+    MCP_ALLOWED_ORIGINS: "https://chatgpt.com,https://claude.ai",
+  };
+  const service = await startSaas(configFromEnv(env));
+  const http = await serve(service.app);
+  try {
+    assert.equal((await http.request("/mcp", undefined, undefined, { origin: "https://chatgpt.com" })).status, 401);
+    assert.equal((await http.request("/mcp", undefined, undefined, { origin: "https://claude.ai" })).status, 401);
+    assert.equal((await http.request("/mcp", undefined, undefined, { origin: "https://evil.invalid" })).status, 403);
+    assert.throws(() => configFromEnv({ ...env, MCP_ALLOWED_ORIGINS: "https://chatgpt.com/path" }), /origin/i);
+  } finally {
+    await http.close();
+    await service.close();
+    await rm(s.root, { recursive: true, force: true });
+  }
+});

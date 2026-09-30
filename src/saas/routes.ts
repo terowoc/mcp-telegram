@@ -133,10 +133,10 @@ export function createSaasRoutes(options: Options): SaasRouter {
       .safeParse(req.body);
     const user = parsed.success ? store.findByLogin(parsed.data.login) : undefined;
     const ids = user ? store.listGrants(user.id).map((g) => g.grantId) : [];
-    if (
-      !parsed.success ||
-      !(await auth.recover(parsed.data.login, parsed.data.recoveryCode, parsed.data.newPassword))
-    ) {
+    const recovered = parsed.success
+      ? await auth.recover(parsed.data.login, parsed.data.recoveryCode, parsed.data.newPassword)
+      : undefined;
+    if (!recovered) {
       res.status(400).json({ error: "recovery-failed" });
       return;
     }
@@ -147,7 +147,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       await cleanupGrants(ids);
     }
     clearCookie(res);
-    res.json({ ok: true });
+    res.json({ ok: true, recoveryCodes: recovered.recoveryCodes });
   });
   router.use((req, res, next) => {
     const session = auth.authenticate(saasCookie(req));
@@ -258,7 +258,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
         res.status(409).json({ error: "attempt-not-waiting" });
         return;
       }
-      res.sendStatus(202);
+      res.status(202).json({ ok: true });
     }),
   );
   router.delete(

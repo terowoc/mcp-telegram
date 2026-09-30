@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SaasMediaBudget } from "./media-budget.js";
 import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
 import {
@@ -28,6 +29,7 @@ interface Options {
   maxWorkers?: number;
   idleMs?: number;
   spawn?: typeof fork;
+  mediaBudget?: Pick<SaasMediaBudget, "reserve">;
 }
 interface Pending {
   resolve: (value: unknown) => void;
@@ -37,6 +39,7 @@ interface Pending {
   settling?: boolean;
   onEvent?: (event: LoginEvent) => void;
   attemptId?: string;
+  releaseMedia?: () => void;
 }
 interface Slot {
   userId: string;
@@ -60,8 +63,10 @@ export class WorkerSupervisor {
   private slots = new Map<string, Slot>();
   private closing = false;
   private readonly maxWorkers: number;
+  private readonly mediaBudget: Pick<SaasMediaBudget, "reserve">;
   constructor(private options: Options) {
     this.maxWorkers = options.maxWorkers ?? 4;
+    this.mediaBudget = options.mediaBudget ?? new SaasMediaBudget({ root: options.filesRoot });
     if (!Number.isSafeInteger(this.maxWorkers) || this.maxWorkers < 1 || this.maxWorkers > 32)
       throw new Error("Invalid worker capacity");
     if (options.idleMs !== undefined && (!Number.isSafeInteger(options.idleMs) || options.idleMs < 1))
@@ -233,6 +238,7 @@ export class WorkerSupervisor {
     const pending = slot.pending.get(id);
     if (!pending) return;
     pending.cleanup();
+    pending.releaseMedia?.();
     clearTimeout(pending.timer);
     slot.pending.delete(id);
     this.armIdle(slot);
@@ -271,6 +277,7 @@ export class WorkerSupervisor {
       attemptId?: string;
       onEvent?: (event: LoginEvent) => void;
       timeoutMs?: number;
+      reserveMedia?: boolean;
     } = {},
   ): Promise<unknown> {
     const slot = this.acquire(userId, options.signal);
@@ -278,6 +285,7 @@ export class WorkerSupervisor {
     options.signal?.throwIfAborted();
     if (slot.state !== "ready") throw new Error("Worker unavailable");
     if (slot.pending.size) throw new Error("Telegram worker busy or settling");
+    const releaseMedia = options.reserveMedia ? this.mediaBudget.reserve(userId) : undefined;
     clearTimeout(slot.idle);
     const id = randomUUID();
     return new Promise((resolve, reject) => {
@@ -295,7 +303,15 @@ export class WorkerSupervisor {
         void this.stopSlot(slot);
       }, options.timeoutMs ?? 34000);
       timer.unref();
-      slot.pending.set(id, { resolve, reject, timer, cleanup, attemptId: options.attemptId, onEvent: options.onEvent });
+      slot.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        cleanup,
+        attemptId: options.attemptId,
+        onEvent: options.onEvent,
+        releaseMedia,
+      });
       options.signal?.addEventListener("abort", cancel, { once: true });
       try {
         this.send(slot, build(slot.generation, id));
@@ -307,7 +323,10 @@ export class WorkerSupervisor {
     });
   }
   call(userId: string, name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}) {
-    return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), options);
+    return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), {
+      ...options,
+      reserveMedia: name === "telegram-download-media",
+    });
   }
   async prepareLogin(userId: string): Promise<void> {
     const slot = this.acquire(userId);

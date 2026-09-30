@@ -30,7 +30,15 @@ class Child extends EventEmitter {
     this.emit("message", { kind: "result", generation: request.generation, id: request.id, result, settling });
   }
 }
-function setup(options: { maxWorkers?: number; idleMs?: number; autoReady?: boolean; autoExit?: boolean } = {}) {
+function setup(
+  options: {
+    maxWorkers?: number;
+    idleMs?: number;
+    autoReady?: boolean;
+    autoExit?: boolean;
+    mediaBudget?: { reserve: (userId: string) => () => void };
+  } = {},
+) {
   const store = createSaasStore(":memory:");
   const users = Array.from({ length: 5 }, (_, i) => store.register(`user${i}`, "hash", []));
   const vault = new SessionVault(Buffer.alloc(32, 1));
@@ -239,6 +247,43 @@ test("changing policy never reuses a worker with the previous policy", async () 
     await tick();
     if (s.children[0].sent.at(-1)?.kind === "tool") s.children[0].reply();
     await rejection;
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("media admission remains reserved across cancellation until physical settlement", async () => {
+  let held = 0;
+  const s = setup({
+    mediaBudget: {
+      reserve: () => {
+        if (held) throw new Error("Media storage quota reached");
+        held++;
+        return () => held--;
+      },
+    },
+  });
+  try {
+    const abort = new AbortController();
+    const pending = s.supervisor.call(s.users[0].id, "telegram-download-media", {}, { signal: abort.signal });
+    const rejected = assert.rejects(pending);
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const child = s.children[0];
+    const request = child.sent[1];
+    assert.ok("id" in request);
+    assert.equal(held, 1);
+    abort.abort();
+    await rejected;
+    child.reply(1, undefined, true);
+    await assert.rejects(s.supervisor.call(s.users[1].id, "telegram-download-media", {}), /quota/);
+    child.emit("message", { kind: "settled", generation: request.generation, id: request.id });
+    assert.equal(held, 0);
+    const next = s.supervisor.call(s.users[1].id, "telegram-download-media", {});
+    await waitFor(() => s.children[1]?.sent.at(-1)?.kind === "tool");
+    s.children[1].reply();
+    await next;
+    assert.equal(held, 0);
   } finally {
     await s.supervisor.close();
     s.store.close();

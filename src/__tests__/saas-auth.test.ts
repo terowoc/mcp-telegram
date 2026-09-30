@@ -7,6 +7,27 @@ import { test } from "node:test";
 import { SaasAuth } from "../saas/auth.js";
 import { createSaasStore } from "../saas/store.js";
 
+test("two successive recoveries atomically replace codes and preserve future recovery", async () => {
+  const store = createSaasStore(":memory:");
+  const auth = new SaasAuth(store, { csrfKey: randomBytes(32) });
+  try {
+    const account = await auth.register("alice", "initial long private password");
+    const first = await auth.recover("alice", account.recoveryCodes[0], "first new private password");
+    assert.ok(first && typeof first === "object" && "recoveryCodes" in first);
+    assert.equal(first.recoveryCodes.length, 8);
+    assert.equal(
+      first.recoveryCodes.some((c: string) => account.recoveryCodes.includes(c)),
+      false,
+    );
+    assert.equal(await auth.recover("alice", account.recoveryCodes[1], "invalid reuse private password"), undefined);
+    const second = await auth.recover("alice", first.recoveryCodes[0], "second new private password");
+    assert.ok(second);
+    assert.ok(await auth.login("alice", "second new private password"));
+  } finally {
+    store.close();
+  }
+});
+
 test("passwords and tokens are not plaintext and recovery revokes prior access", async () => {
   const dir = await mkdtemp(join(tmpdir(), "saas-auth-"));
   const path = join(dir, "auth.sqlite");

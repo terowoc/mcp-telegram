@@ -74,7 +74,7 @@ assert.equal(healthAtCapacity.status, 200);
 **Files:** Update README/deployment docs and plan checkboxes; follow native executor's ledger/review requirements.
 
 - [x] **Step 1:** Run final full backend tests, typecheck/lint/build/docs plus web check/unit/Playwright and production-like image smoke. Compare tests to spec acceptance, review root/frontend notices and exact pinned source provenance. No claim of exhaustive upstream feature correctness.
-- [ ] **Step 2:** Request the one fresh whole-branch review required by native execution. Give reviewer spec, all plans, branch diff and evidence; fix Important/Critical findings with regression tests before integration.
+- [x] **Step 2:** Request the one fresh whole-branch review required by native execution. Give reviewer spec, all plans, branch diff and evidence; fix Important/Critical findings with regression tests before integration.
 - [ ] **Step 3:** Create/update PR for this feature and attach it to the task; confirm CI. After authorized integration, monitor immutable GitHub Actions deploy and verify public HTTPS/Web A assets/OAuth/MCP, protected SaaS registration/status with isolated test accounts, genuine rollback probe, unchanged unrelated containers.
 - [ ] **Step 4:** Show desktop/mobile/light/dark UI screenshots. Ask the human to perform browser Telegram login and separate MCP QR; verify protected status and server session persistence after target-only restart. Do not send real messages to verify chat delivery. Provide endpoint/registration and client setup links; clearly distinguish any remaining human login from completed deployment.
 - [ ] **Step 5:** Record verification and any concrete blocker; do not claim whole SaaS complete if credentials, human QR, CI or acceptance still remain.

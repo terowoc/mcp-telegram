@@ -65,6 +65,7 @@ for (const viewport of [
         await page.getByLabel('Пароль двухэтапной аутентификации Telegram').fill('synthetic cloud password');
         await page.getByRole('button', { name: 'Подтвердить вход', exact: true }).click();
         await expect(page.getByText('Сессия MCP сохранена', { exact: true })).toBeVisible({ timeout: 12000 });
+        await expect(page.getByText('Запрос не выполнен.', { exact: false })).not.toBeVisible();
         await expect(page.getByText('Аккаунты Telegram отличаются.', { exact: false })).toBeVisible();
         await page.screenshot({ path: `test-results/mcp-${viewport.width}-${theme}.png` });
         await page.getByRole('button', { name: 'Права доступа', exact: true }).click();
@@ -155,6 +156,10 @@ test('recovery changes the password and a client can be revoked with confirmatio
     await page.getByLabel('Новый пароль', { exact: true }).fill('recovered browser account password');
     await page.locator('form').getByRole('button', { name: 'Восстановить доступ', exact: true }).click();
     await expect(page.getByText('Пароль обновлён. Войдите с новым паролем.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Сохраните коды восстановления', { exact: true })).toBeVisible();
+    const replacementCode = (await page.locator('pre').innerText()).split('\n')[0];
+    expect(replacementCode).not.toBe(code);
+    await page.getByRole('button', { name: 'Я сохранил коды' }).click();
     await expect(page.getByLabel('Код восстановления', { exact: true })).toHaveValue('');
     await page.getByRole('button', { name: 'Войти', exact: true }).first().click();
     await expect(page.getByLabel('Пароль TG Bridge', { exact: true })).toBeVisible();

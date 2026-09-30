@@ -170,10 +170,9 @@ test("QR password cancel and expiry are terminal and user bound", async () => {
       409,
     );
     s.supervisor.events.get(`${user.id}:${started.id}`)?.({ type: "needs-password" });
-    assert.equal(
-      (await a.request(`/telegram/login/${started.id}/password`, "POST", { password: "secret" })).status,
-      202,
-    );
+    const accepted = await a.request(`/telegram/login/${started.id}/password`, "POST", { password: "secret" });
+    assert.equal(accepted.status, 202);
+    assert.deepEqual(await accepted.json(), { ok: true });
     assert.equal(s.supervisor.passwords[0].userId, user.id);
     assert.equal((await a.request(`/telegram/login/${started.id}`, "DELETE")).status, 204);
     assert.equal(
