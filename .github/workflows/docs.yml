@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'mcp-telegram/mcp-telegram'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
