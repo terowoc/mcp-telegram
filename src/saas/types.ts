@@ -1,0 +1,26 @@
+export interface UserPolicy {
+  profile: "read" | "full";
+  chatIds: string[];
+  version: number;
+}
+
+export interface UserRecord {
+  id: string;
+  login: string;
+  passwordHash: string;
+  policy: UserPolicy;
+  disabled: boolean;
+}
+
+export interface BrowserSession {
+  userId: string;
+  csrfHash: string;
+  expiresAt: number;
+}
+
+export interface GrantBinding {
+  userId: string;
+  grantId: string;
+  clientId: string;
+  version: number;
+}
