@@ -183,3 +183,39 @@ test("existing single owner CLI modes retain dispatch and SaaS is explicit", asy
   assert.match(cli, /command === "saas"/);
   assert.match(cli, /import\("\.\/index\.js"\)/);
 });
+
+test("worker capacity returns a bounded response while HTTP health stays available", async () => {
+  const s = await setup();
+  class Child extends EventEmitter {
+    connected = true;
+    send(message: ParentMessage) {
+      if (message.kind === "init")
+        queueMicrotask(() => this.emit("message", { kind: "ready", generation: message.generation }));
+      return true;
+    }
+    kill() {
+      queueMicrotask(() => this.emit("exit", 0));
+      return true;
+    }
+  }
+  const child = new Child();
+  const service = await startSaas(s.config, { spawn: (() => child as unknown as ChildProcess) as typeof fork });
+  const http = await serve(service.app);
+  try {
+    const a = await http.request("/api/saas/register", { login: "alice", password });
+    const b = await http.request("/api/saas/register", { login: "bob", password });
+    const cookieA = a.headers.get("set-cookie")?.split(";", 1)[0];
+    const cookieB = b.headers.get("set-cookie")?.split(";", 1)[0];
+    const csrfA = (await a.json()).csrfToken;
+    const csrfB = (await b.json()).csrfToken;
+    assert.equal((await http.request("/api/saas/telegram/login", {}, cookieA, { "x-csrf-token": csrfA })).status, 202);
+    const capacity = await http.request("/api/saas/telegram/login", {}, cookieB, { "x-csrf-token": csrfB });
+    assert.equal(capacity.status, 503);
+    assert.ok(capacity.headers.get("retry-after"));
+    assert.equal((await http.request("/healthz")).status, 200);
+  } finally {
+    await service.close();
+    await http.close();
+    await rm(s.root, { recursive: true, force: true });
+  }
+});

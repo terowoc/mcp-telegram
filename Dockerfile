@@ -25,6 +25,7 @@ WORKDIR /app
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=frontend --chown=node:node /app/apps/web/dist ./web
+COPY --chown=node:node packaging/compose.production.yaml ./deployment/compose.production.yaml
 COPY --chown=node:node package.json ./
 USER node
 EXPOSE 3000
