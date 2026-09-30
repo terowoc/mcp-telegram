@@ -36,20 +36,28 @@ function cleanup() {
 process.on("exit", cleanup);
 
 type ActiveLogin = { socket: Socket; abort: AbortController };
-type Dispatch = { lock: GlobalLock; executor: ToolExecutor; activeLogin: ActiveLogin | null };
+type Dispatch = {
+  lock: GlobalLock;
+  executor: ToolExecutor;
+  loginExecutor: ToolExecutor;
+  loginAllowed: boolean;
+  activeLogin: ActiveLogin | null;
+};
 const dispatches = new WeakMap<McpServerInternal, Dispatch>();
 
 function diagnosticResult(dispatch: Dispatch, telegram: TelegramService) {
   const status = {
-    owner: dispatch.executor.isSettling() ? "settling" : "ready",
+    owner: dispatch.executor.isSettling() || dispatch.loginExecutor.isSettling() ? "settling" : "ready",
     telegram: telegram.diagnostics?.() ?? { connected: false },
     executor: dispatch.executor.diagnostics(),
+    login: dispatch.loginExecutor.diagnostics(),
   };
   return ok(JSON.stringify(status), status);
 }
 
 export interface HandleClientOptions {
   toolCallTimeoutMs?: number;
+  settlementGraceMs?: number;
   /** Production fail-stop: the supervisor replaces an owner with a stuck operation. */
   onStuck?: () => void;
 }
@@ -69,6 +77,7 @@ function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, op
     timeoutMs: opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS,
     onTimeout: (name) => telegram.markUnhealthy?.(`tool call timed out: ${name}`),
     onStuck: opts.onStuck,
+    settlementGraceMs: opts.settlementGraceMs,
     authorize: async (name, args) => {
       if (name === "telegram-logout") await telegram.cancelQrLogin?.();
       return policy.authorize(name, args, async (id) => {
@@ -77,7 +86,38 @@ function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, op
       });
     },
   });
-  const dispatch: Dispatch = { lock, executor, activeLogin: null };
+  const loginExecutor = new ToolExecutor({
+    lock,
+    timeoutMs: 360_000,
+    onStuck: opts.onStuck,
+    settlementGraceMs: opts.settlementGraceMs,
+    onTimeout: () => telegram.markUnhealthy?.("QR login timed out"),
+    tools: {
+      login_start: {
+        handler: async (_args, extra) => {
+          const socket = extra.socket as Socket;
+          const id = extra.id as string;
+          const signal = extra.signal as AbortSignal;
+          const result = await telegram.startQrLogin(
+            () => {},
+            (url) => send(socket, { type: "login_qr", id, url }),
+            signal,
+          );
+          signal.throwIfAborted();
+          if (!result.success) return { success: false, error: result.message };
+          const me = await telegram.getMe();
+          return { success: true, username: me.username ?? undefined };
+        },
+      },
+    },
+  });
+  const dispatch: Dispatch = {
+    lock,
+    executor,
+    loginExecutor,
+    loginAllowed: !!tools["telegram-login"] && tools["telegram-login"].enabled !== false,
+    activeLogin: null,
+  };
   dispatches.set(mcpServer, dispatch);
   return dispatch;
 }
@@ -92,6 +132,8 @@ export function wireOwnerExecutor(
   for (const [name, tool] of Object.entries(mcpServer._registeredTools)) {
     tool.handler = (args, extra) => {
       if (name === "telegram-doctor") return Promise.resolve(diagnosticResult(dispatch, telegram));
+      if (dispatch.loginExecutor.isSettling())
+        return Promise.reject(new Error("Telegram executor unavailable: QR operation is still settling"));
       if (name === "telegram-logout") dispatch.activeLogin?.abort.abort();
       const context = extra ?? (tool.inputSchema ? {} : args);
       return dispatch.executor.call(name, tool.inputSchema ? args : {}, {
@@ -204,6 +246,8 @@ function send(socket: Socket, msg: IpcMessage): void {
 async function handleToolRequest(socket: Socket, req: IpcToolRequest, dispatch: Dispatch, signal: AbortSignal) {
   const response: IpcToolResponse = { type: "tool_response", id: req.id };
   try {
+    if (dispatch.loginExecutor.isSettling())
+      throw new Error("Telegram executor unavailable: QR operation is still settling");
     response.result = await dispatch.executor.call(req.tool, req.args, { signal, deadlineAt: req.deadlineAt });
   } catch (error) {
     response.error = (error instanceof Error ? error.message : String(error)).slice(0, 2048);
@@ -214,39 +258,39 @@ async function handleToolRequest(socket: Socket, req: IpcToolRequest, dispatch: 
 async function handleLoginStart(
   socket: Socket,
   req: IpcLoginStart,
-  telegram: TelegramService,
+  _telegram: TelegramService,
   dispatch: Dispatch,
   abort: AbortController,
 ) {
   const fail = (error: string) =>
     send(socket, { type: "login_done", id: req.id, success: false, error: error.slice(0, 2048) });
+  if (!dispatch.loginAllowed) {
+    fail("Authentication writes are disabled by the owner profile");
+    return;
+  }
   if (dispatch.activeLogin) {
     fail("Another QR login is already in progress");
     return;
   }
-  if (dispatch.executor.isSettling()) {
+  if (dispatch.executor.isSettling() || dispatch.loginExecutor.isSettling()) {
     fail("Telegram executor unavailable: previous operation is still settling");
     return;
   }
   dispatch.activeLogin = { socket, abort };
-  let unlock: (() => void) | undefined;
   try {
-    unlock = await dispatch.lock.acquire(abort.signal);
-    abort.signal.throwIfAborted();
-    const result = await telegram.startQrLogin(
-      () => {},
-      (url) => send(socket, { type: "login_qr", id: req.id, url }),
-      abort.signal,
-    );
-    if (result.success) {
-      const me = await telegram.getMe();
-      send(socket, { type: "login_done", id: req.id, success: true, username: me.username ?? undefined });
-    } else fail(result.message);
+    const result = (await dispatch.loginExecutor.call(
+      "login_start",
+      {},
+      {
+        signal: abort.signal,
+        extra: { socket, id: req.id },
+      },
+    )) as { success: boolean; error?: string; username?: string };
+    send(socket, { type: "login_done", id: req.id, ...result });
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   } finally {
     dispatch.activeLogin = null;
-    unlock?.();
   }
 }
 
@@ -256,6 +300,7 @@ export interface OwnerHandle {
   gracefulExit: () => Promise<void>;
   beforeShutdown?: () => Promise<void>;
   executor: ToolExecutor;
+  isHealthy: () => boolean;
 }
 
 /**
@@ -310,7 +355,13 @@ export async function startOwner(
   console.error(`[${label}] IPC socket ready: ${sock}`);
 
   let shuttingDown = false;
-  const handle: OwnerHandle = { server, srv, executor, gracefulExit: async () => {} };
+  const handle: OwnerHandle = {
+    server,
+    srv,
+    executor,
+    gracefulExit: async () => {},
+    isHealthy: () => !executor.isSettling() && !dispatchFor(mcpServer, telegram, {}).loginExecutor.isSettling(),
+  };
   const gracefulExit = async () => {
     if (shuttingDown) return;
     shuttingDown = true;

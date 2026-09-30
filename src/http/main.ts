@@ -34,7 +34,7 @@ async function main() {
     version,
     allowedOrigins: (process.env.MCP_ALLOWED_ORIGINS ?? "").split(",").filter(Boolean),
     trustProxy: 1,
-    isHealthy: () => ipc.isConnected() && owner?.executor.isSettling() === false,
+    isHealthy: () => ipc.isConnected() && owner?.isHealthy() === true,
     callTool: (name, args, callOptions) => ipc.call(name, args, callOptions),
   });
   if (!tryAcquireLock()) {

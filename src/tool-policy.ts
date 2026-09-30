@@ -10,7 +10,6 @@ const SCOPED = new Set([
   "telegram-get-chat-members",
   "telegram-send-message",
   "telegram-edit-message",
-  "telegram-delete-message",
   "telegram-forward-message",
   "telegram-download-media",
   "telegram-send-file",
@@ -77,7 +76,12 @@ export class ToolPolicy {
     const canonical = { ...args };
     for (const field of fields) {
       if (typeof args[field] !== "string") throw new Error("Tool requires an explicit chat scope");
-      const id = await resolve(args[field]);
+      let id: string;
+      try {
+        id = await resolve(args[field]);
+      } catch {
+        throw new Error("Unable to resolve an allowed chat");
+      }
       if (!this.chats.has(id)) throw new Error("Chat is not allowed by server policy");
       canonical[field] = id;
     }

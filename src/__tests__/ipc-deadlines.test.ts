@@ -8,9 +8,14 @@ import { handleClient } from "../master.js";
 import type { TelegramService } from "../telegram-client.js";
 import { cleanupIpcEndpoint, makeIpcEndpoint } from "./ipc-endpoint.helper.js";
 
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, mcp: McpServerInternal) {
+async function fixture(
+  t: { after: (fn: () => Promise<void>) => void },
+  mcp: McpServerInternal,
+  telegram = {} as TelegramService,
+  options: Record<string, unknown> = {},
+) {
   const endpoint = makeIpcEndpoint("mcp-deadline-test");
-  const server = createServer((socket) => handleClient(socket, mcp, {} as TelegramService, { toolCallTimeoutMs: 150 }));
+  const server = createServer((socket) => handleClient(socket, mcp, telegram, { toolCallTimeoutMs: 150, ...options }));
   await new Promise<void>((resolve) => server.listen(endpoint, resolve));
   const sockets: Socket[] = [];
   t.after(async () => {
@@ -120,4 +125,50 @@ it("doctor remains available while the operation queue is blocked", async (t) =>
   const result = await response("doctor");
   assert.equal(result.error, undefined);
   assert.ok(result.result && typeof result.result === "object");
+});
+
+it("raw QR login obeys the disabled authentication-write profile", async (t) => {
+  let logins = 0;
+  const telegram = {
+    startQrLogin: async () => {
+      logins++;
+      return { success: false, message: "test" };
+    },
+  } as unknown as TelegramService;
+  const { send } = await fixture(
+    t,
+    {
+      _registeredTools: {
+        "telegram-login": { enabled: false, handler: async () => ({}) },
+      },
+    },
+    telegram,
+  );
+  send({ type: "login_start", id: "login" });
+  await delay(30);
+  assert.equal(logins, 0);
+});
+
+it("cancelled stubborn QR login reports settlement and invokes bounded recovery", async (t) => {
+  let recovery = 0;
+  const telegram = { startQrLogin: async () => new Promise(() => {}) } as unknown as TelegramService;
+  const { send, response } = await fixture(
+    t,
+    {
+      _registeredTools: {
+        "telegram-login": { enabled: true, handler: async () => ({}) },
+      },
+    },
+    telegram,
+    { settlementGraceMs: 20, onStuck: () => recovery++ },
+  );
+  send({ type: "login_start", id: "login" });
+  await delay(10);
+  send({ type: "cancel", id: "login" });
+  await delay(10);
+  send({ type: "tool", id: "doctor", tool: "telegram-doctor", args: {} });
+  const diagnostic = (await response("doctor")).result as { structuredContent: { owner: string } };
+  assert.equal(diagnostic.structuredContent.owner, "settling");
+  await delay(40);
+  assert.equal(recovery, 1);
 });

@@ -43,3 +43,42 @@ it("invalid profile or noncanonical allowlist refuses configuration", () => {
   assert.throws(() => new ToolPolicy({ profile: "typo" }), /profile/i);
   assert.throws(() => new ToolPolicy({ chatIds: ["@username"] }), /canonical/i);
 });
+
+it("chat restrictions deny deletion whose Telegram RPC has no peer scope", async () => {
+  const policy = new ToolPolicy({ chatIds: ["42"] });
+  await assert.rejects(
+    policy.authorize("telegram-delete-message", { chatId: "42", messageIds: [999] }, async () => "42"),
+    /scope|policy/,
+  );
+});
+
+it("alias errors never expose disallowed dialog names or IDs", async () => {
+  const policy = new ToolPolicy({ chatIds: ["42"] });
+  let message = "";
+  try {
+    await policy.authorize("telegram-read-messages", { chatId: "secret" }, async () => {
+      throw new Error("Ambiguous: Private secret one (900), Private secret two (901)");
+    });
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  assert.ok(message);
+  assert.doesNotMatch(message, /Private|secret|900|901/);
+});
+
+it("read profile blocks both transcription entry points that consume quota", async () => {
+  let calls = 0;
+  const server = new McpServer({ name: "transcription-policy", version: "test" });
+  registerTools(server, {
+    ensureConnected: async () => true,
+    transcribeAudio: async () => {
+      calls++;
+      return { text: "hello" };
+    },
+  } as unknown as TelegramService);
+  const internal = server as unknown as McpServerInternal;
+  applyToolProfile(internal, new ToolPolicy({ profile: "read" }));
+  const tools = new ToolExecutor({ tools: internal._registeredTools });
+  await assert.rejects(tools.call("telegram-get-transcription", { chatId: "42", messageId: 1 }), /Unknown|disabled/);
+  assert.equal(calls, 0);
+});
