@@ -76,7 +76,9 @@ export function createSaasIdentity(
     },
     authenticationBinding: (id) => {
       const user = active(id);
-      return user ? `urn:tg-bridge:credential:${hashOpaqueToken(user.passwordHash)}` : undefined;
+      return user
+        ? `urn:tg-bridge:credential:${hashOpaqueToken(user.credentialVersion === 0 && user.passwordHash ? user.passwordHash : `${user.id}:${user.credentialVersion}`)}`
+        : undefined;
     },
     describeAccess: (id) => {
       const user = id ? active(id) : undefined;

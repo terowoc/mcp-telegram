@@ -210,7 +210,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       return;
     }
     res.json({
-      user: { id: user.id, login: user.login },
+      user: { id: user.id, login: user.login, hasPassword: !!user.passwordHash },
       csrfToken: session.csrfToken,
       policy: user.policy,
       telegram: supervisor.status(user.id),
@@ -319,7 +319,12 @@ export function createSaasRoutes(options: Options): SaasRouter {
     mutation(async (req, res, userId) => {
       const parsed = z.object({ password: z.string().min(1).max(1024) }).safeParse(req.body);
       const user = store.findUser(userId);
-      if (!parsed.success || !user || !(await verifyPassword(parsed.data.password, user.passwordHash))) {
+      if (
+        !parsed.success ||
+        !user ||
+        !user.passwordHash ||
+        !(await verifyPassword(parsed.data.password, user.passwordHash))
+      ) {
         res.status(403).json({ error: "invalid-credentials" });
         return;
       }

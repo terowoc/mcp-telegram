@@ -7,7 +7,8 @@ export interface UserPolicy {
 export interface UserRecord {
   id: string;
   login: string;
-  passwordHash: string;
+  passwordHash?: string;
+  credentialVersion: number;
   policy: UserPolicy;
   disabled: boolean;
 }
@@ -16,6 +17,26 @@ export interface BrowserSession {
   userId: string;
   csrfHash: string;
   expiresAt: number;
+  authenticatedAt: number;
+}
+
+export interface TelegramAccount {
+  id: string;
+  username?: string;
+}
+/** Internal proof emitted only by the server Telegram worker, never a browser DTO. */
+export interface VerifiedTelegramLogin {
+  attemptId: string;
+  account: TelegramAccount;
+  session: string;
+  authenticatedAt: number;
+}
+export interface TelegramLoginPlan {
+  userId: string;
+  telegramId: string;
+  action: "create" | "reuse" | "link";
+  persistSession: boolean;
+  credentialVersion: number;
 }
 
 export interface GrantBinding {
@@ -27,7 +48,7 @@ export interface GrantBinding {
 
 /** Browser DTOs deliberately exclude persistence envelopes and authentication hashes. */
 export interface SaasMe {
-  user: { id: string; login: string };
+  user: { id: string; login: string; hasPassword: boolean };
   csrfToken: string;
   policy: UserPolicy;
   telegram: {
