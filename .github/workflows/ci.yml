@@ -19,14 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node-version: [22, 24]
+        node-version: [24, 26]
         # Issue #69: the npm package could not start AT ALL on Windows — the IPC endpoint
         # was a filesystem path, which net.listen() rejects there with EACCES — and a
         # Linux-only matrix could never see it. One Windows job guards the platform split
         # in socketPath() without tripling CI time.
         include:
           - os: windows-latest
-            node-version: 22
+            node-version: 24
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -52,3 +52,26 @@ jobs:
       # every OS would only add minutes without covering any extra risk.
       - run: npm run docs:build
         if: runner.os == 'Linux'
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.15
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm --prefix apps/web ci --allow-git=all
+      - run: npx tsx --test src/__tests__/web-package.test.ts
+      - run: npm run web:check
+      - run: npm run web:test -- --run
+      - run: npm run web:build:mocked
+      - run: npm --prefix apps/web exec -- playwright install --with-deps chromium
+      - run: npm run web:test:playwright -- --project=chromium --workers=1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-playwright-failure
+          path: apps/web/test-results/

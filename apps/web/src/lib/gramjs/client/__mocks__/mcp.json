@@ -1,0 +1,54 @@
+{
+  "users": [
+    {
+      "id": "1",
+      "self": true
+    },
+    {
+      "id": "2",
+      "firstName": "Fixture",
+      "lastName": "Contact"
+    }
+  ],
+  "chats": [],
+  "channels": [],
+  "dialogs": {
+    "active": [
+      {
+        "id": "1",
+        "topMessage": 2
+      },
+      {
+        "id": "2",
+        "topMessage": 4
+      }
+    ],
+    "archived": []
+  },
+  "messages": {
+    "1": [
+      {
+        "id": 1,
+        "message": "Hello world!"
+      },
+      {
+        "id": 2,
+        "message": "Hello world 2!"
+      }
+    ],
+    "2": [
+      {
+        "id": 3,
+        "message": "Hello fixture!"
+      },
+      {
+        "id": 4,
+        "message": "Mock Telegram chat ready"
+      }
+    ]
+  },
+  "availableReactions": [],
+  "dialogFilters": [],
+  "documents": [],
+  "topPeers": []
+}

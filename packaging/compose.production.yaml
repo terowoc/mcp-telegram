@@ -2,35 +2,39 @@ name: mcp-telegram
 services:
   mcp:
     image: ${MCP_IMAGE:?Set an immutable image digest}
+    command: [saas]
     restart: unless-stopped
     init: true
     user: '1000:1000'
     env_file: telegram.env
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=512
+      MCP_WEB_ROOT: /app/web
+      MCP_SAAS_MAX_USERS: '100'
+      MCP_SAAS_MAX_WORKERS: ${MCP_SAAS_MAX_WORKERS:-4}
       MCP_PUBLIC_URL: https://tg-mcp.azimboev.uz
       MCP_HTTP_PORT: '3000'
       MCP_AUTH_DIR: /data/auth
-      MCP_OWNER_PASSWORD_HASH_FILE: /run/secrets/owner-password.hash
+      MCP_SESSION_KEY_FILE: /run/secrets/session-key
       MCP_TELEGRAM_FILE_ROOT: /data/files
       MCP_TELEGRAM_MAX_MEDIA_BYTES: '20971520'
       MCP_ALLOWED_ORIGINS: https://chatgpt.com,https://chat.openai.com,https://claude.ai
     ports:
       - '127.0.0.1:18770:3000'
     volumes:
-      - ./data/telegram:/home/node/.mcp-telegram
       - ./data/auth:/data/auth
       - ./data/files:/data/files
-      - ./owner-password.hash:/run/secrets/owner-password.hash:ro
+      - ./session-key.bin:/run/secrets/session-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    mem_limit: 768m
+    mem_limit: ${MCP_MEMORY_LIMIT:-3g}
     cpus: '1.0'
     pids_limit: 128
-    stop_grace_period: 30s
+    stop_grace_period: 45s
     logging:
       driver: json-file
       options:

@@ -2,7 +2,7 @@
   "name": "@overpod/mcp-telegram",
   "version": "1.43.1",
   "mcpName": "io.github.mcp-telegram/mcp-telegram",
-  "description": "MCP server for Telegram userbot — messages, media, reactions, polls & more. Built on GramJS/MTProto.",
+  "description": "MCP server for Telegram userbot \u2014 messages, media, reactions, polls & more. Built on GramJS/MTProto.",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -40,7 +40,14 @@
     "docs:dev": "vitepress dev docs",
     "predocs:build": "npm run gen:changelog",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "web:build": "node scripts/build-web.mjs production",
+    "web:build:mocked": "node scripts/build-web.mjs mocked",
+    "web:dev": "node scripts/build-web.mjs dev",
+    "web:dev:mocked": "node scripts/build-web.mjs dev:mocked",
+    "web:check": "npm --prefix apps/web run check",
+    "web:test": "npm --prefix apps/web run test --",
+    "web:test:playwright": "npm --prefix apps/web run test:playwright --"
   },
   "keywords": [
     "mcp",
