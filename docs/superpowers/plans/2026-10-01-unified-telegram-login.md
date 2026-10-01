@@ -67,7 +67,7 @@
 - `SaasAuth.completeTelegramLogin(proof: VerifiedTelegramLogin, options: { vault: SessionVault; legacyUserId?: string }): { userId: string; sessionToken: string; csrfToken: string }` uses the plan/commit APIs, never accepts browser-provided proof. Existing password login stays unchanged for legacy users; missing password hashes deny password authentication.
 - Credential binding: unchanged legacy hash binding when version=0 and hash exists; otherwise opaque binding of user ID and credentialVersion. Link/recovery transitions increment version and invalidate sessions/grants.
 
-- [ ] **Step 1:** Write failing tests `schema_v2_migration_preserves_foreign_keys_and_legacy_access`, `same_telegram_id_cannot_claim_two_users`, `duplicate_legacy_matches_require_explicit_owner`, `passwordless_login_requires_verified_proof`, `commit_failure_leaves_no_partial_identity_or_browser_session`, `existing_identity_login_preserves_policy_and_mcp_session`, `link_rotates_credentials_and_revokes_old_access`. Assert reopened v3 retains all v2 rows and `PRAGMA foreign_key_check` is empty; username changes resolve the same ID; concurrent connections produce one winning identity; maxUsers=1 rejects a second new identity; optional hash denies password login.
+- [x] **Step 1:** Write failing tests `schema_v2_migration_preserves_foreign_keys_and_legacy_access`, `same_telegram_id_cannot_claim_two_users`, `duplicate_legacy_matches_require_explicit_owner`, `passwordless_login_requires_verified_proof`, `commit_failure_leaves_no_partial_identity_or_browser_session`, `existing_identity_login_preserves_policy_and_mcp_session`, `link_rotates_credentials_and_revokes_old_access`. Assert reopened v3 retains all v2 rows and `PRAGMA foreign_key_check` is empty; username changes resolve the same ID; concurrent connections produce one winning identity; maxUsers=1 rejects a second new identity; optional hash denies password login.
 
 ```ts
 assert.equal(passwordlessUser.passwordHash, undefined);
@@ -76,10 +76,10 @@ assert.deepEqual(passwordlessUser.policy, { profile: 'read', chatIds: [], versio
 assert.equal(store.findBrowserSession(revokedHash), undefined);
 assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
 ```
-- [ ] **Step 2:** Run `npx tsx --test src/__tests__/saas-store.test.ts src/__tests__/saas-auth.test.ts src/__tests__/saas-oauth.test.ts src/__tests__/saas-routes.test.ts`; record the missing-contract failures.
-- [ ] **Step 3:** Implement v3 migration with a nullable password column, credential version and browser_sessions authenticated_at, preserving dependent FK rows transactionally. Existing sessions get authenticated_at=0 (valid ordinary login, never proof of fresh login); new password/Telegram logins store server authentication time. Add `telegram_identities` unique constraints; reject identity reassignment in legacy QR completion too. Make routes requiring password verification explicitly deny passwordless users rather than pass undefined to hashing. Generate internal `tg_<uuid-without-hyphens-truncated-to-fit-32>` login with uniqueness checked in transaction. Retain read policy for new users and old policy for reuse/link. Do not persist plaintext proof; encrypted session is optional when reuse preserves an existing one.
-- [ ] **Step 4:** Run the targeted tests and `npm run typecheck`; expected all pass. Verify migration failure rolls back and old legacy OAuth bindings still match until explicit link/reset.
-- [ ] **Step 5:** Commit `[Feature] Auth: Add verified Telegram identities and passwordless cabinets`.
+- [x] **Step 2:** Run `npx tsx --test src/__tests__/saas-store.test.ts src/__tests__/saas-auth.test.ts src/__tests__/saas-oauth.test.ts src/__tests__/saas-routes.test.ts`; record the missing-contract failures.
+- [x] **Step 3:** Implement v3 migration with a nullable password column, credential version and browser_sessions authenticated_at, preserving dependent FK rows transactionally. Existing sessions get authenticated_at=0 (valid ordinary login, never proof of fresh login); new password/Telegram logins store server authentication time. Add `telegram_identities` unique constraints; reject identity reassignment in legacy QR completion too. Make routes requiring password verification explicitly deny passwordless users rather than pass undefined to hashing. Generate internal `tg_<uuid-without-hyphens-truncated-to-fit-32>` login with uniqueness checked in transaction. Retain read policy for new users and old policy for reuse/link. Do not persist plaintext proof; encrypted session is optional when reuse preserves an existing one.
+- [x] **Step 4:** Run the targeted tests and `npm run typecheck`; expected all pass. Verify migration failure rolls back and old legacy OAuth bindings still match until explicit link/reset.
+- [x] **Step 5:** Commit `[Feature] Auth: Add verified Telegram identities and passwordless cabinets`.
 
 ### Task 2: Tool-free temporary login workers and one process budget
 
@@ -92,7 +92,7 @@ assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
 - `TelegramAuthEvent`: discriminated union `token { token: string; expiresAt: number }`, `needs-password`, `verified { proof: VerifiedTelegramLogin }`, `error { code: 'login-failed' | 'worker-unavailable' }`. Token is base64url from server-generated `tg://login` URL, not an auth key.
 - Validate distinct bootstrap IPC frames with attempt ID + generation; init supplies only Telegram API configuration. Private session persistence is memory-only. Internal verified proof never appears in public attempt DTOs.
 
-- [ ] **Step 1:** Write failing tests `temporary_worker_has_no_tools_or_user_database`, `two_slots_are_shared_with_persistent_workers`, `delayed_exit_keeps_capacity_reserved`, `stale_generation_cannot_publish_proof`, `failure_and_cancel_discard_session`, `logout_failure_still_destroys_local_worker`. Assert persistent1 + bootstrap1 rejects another process at max=2; release twice does not admit a third process; no temp plaintext file exists; verified event contains server fixture ID rather than supplied UI ID.
+- [x] **Step 1:** Write failing tests `temporary_worker_has_no_tools_or_user_database`, `two_slots_are_shared_with_persistent_workers`, `delayed_exit_keeps_capacity_reserved`, `stale_generation_cannot_publish_proof`, `failure_and_cancel_discard_session`, `logout_failure_still_destroys_local_worker`. Assert persistent1 + bootstrap1 rejects another process at max=2; release twice does not admit a third process; no temp plaintext file exists; verified event contains server fixture ID rather than supplied UI ID.
 
 ```ts
 const budget = new WorkerBudget(2);
@@ -104,10 +104,10 @@ first.release();
 budget.reserve('temporary-C');
 assert.throws(() => budget.reserve('temporary-D'), CapacityError);
 ```
-- [ ] **Step 2:** Run `npx tsx --test src/__tests__/saas-telegram-auth-worker.test.ts src/__tests__/saas-workers.test.ts src/__tests__/saas-main.test.ts`; expected missing-budget/worker failures.
-- [ ] **Step 3:** Implement validated IPC and bootstrap worker around existing `TelegramService.startQrLogin`, memory `TelegramSessionStore`, `onQrUrl`, cancellable password callback and `getMe`. Add no MCP tool executor. Stop/kill/reap using current lifecycle conventions; reserve budget before async spawn. Parent rejects malformed frames and callbacks from old generations. Preserve all existing fixed-user supervisor behavior.
-- [ ] **Step 4:** Run targeted tests and `npm run typecheck`; expected pass, including delayed exit/startup failure. Verify production-sized fixture max=2 throughout promotion/reuse.
-- [ ] **Step 5:** Commit `[Feature] Auth: Add bounded temporary Telegram login workers`.
+- [x] **Step 2:** Run `npx tsx --test src/__tests__/saas-telegram-auth-worker.test.ts src/__tests__/saas-workers.test.ts src/__tests__/saas-main.test.ts`; expected missing-budget/worker failures.
+- [x] **Step 3:** Implement validated IPC and bootstrap worker around existing `TelegramService.startQrLogin`, memory `TelegramSessionStore`, `onQrUrl`, cancellable password callback and `getMe`. Add no MCP tool executor. Stop/kill/reap using current lifecycle conventions; reserve budget before async spawn. Parent rejects malformed frames and callbacks from old generations. Preserve all existing fixed-user supervisor behavior.
+- [x] **Step 4:** Run targeted tests and `npm run typecheck`; expected pass, including delayed exit/startup failure. Verify production-sized fixture max=2 throughout promotion/reuse.
+- [x] **Step 5:** Commit `[Feature] Auth: Add bounded temporary Telegram login workers`.
 
 ### Task 3: Cookie-owned attempts and pre-auth HTTP API
 
@@ -121,7 +121,7 @@ assert.throws(() => budget.reserve('temporary-D'), CapacityError);
 - `createTelegramAuthRoutes({ auth,store,vault,attempts,contexts,publicUrl,revokeGrants }): SaasRouter` mounts before existing authenticated middleware at `/api/saas/telegram-auth`. `startSaas` owns the shared contexts instance for API and OAuth.
 - `/start` first POST returns `{ csrfToken }` and cookie without starting a worker; next POST with header `X-CSRF-Token` returns attempt. Poll GET requires bootstrap cookie; password/complete/DELETE require CSRF + own Origin. Legacy link passes current SaaS cookie and freshly verified `legacyPassword` in complete body; no arbitrary target user ID.
 
-- [ ] **Step 1:** Write failing tests `initial_context_does_not_spawn`, `foreign_cookie_and_origin_cannot_read_or_complete`, `browser_id_is_not_authentication`, `expiry_and_late_success_never_issue_cookie`, `lost_completion_response_cannot_issue_twice`, `disable_during_worker_shutdown_fails_complete`, `legacy_link_checks_cookie_fresh_password_and_server_id`, `start_limits_and_shared_capacity_return_retry`, `old_tab_cannot_complete_after_cancel`. Pin TTL300000, JSON8KiB, IP5/900000ms, aggregate20/3600000ms, reads60/minute and max5 password submissions. Assert commit failure/worker stop failure means no Set-Cookie for cabinet and no partial DB state.
+- [x] **Step 1:** Write failing tests `initial_context_does_not_spawn`, `foreign_cookie_and_origin_cannot_read_or_complete`, `browser_id_is_not_authentication`, `expiry_and_late_success_never_issue_cookie`, `lost_completion_response_cannot_issue_twice`, `disable_during_worker_shutdown_fails_complete`, `legacy_link_checks_cookie_fresh_password_and_server_id`, `start_limits_and_shared_capacity_return_retry`, `old_tab_cannot_complete_after_cancel`. Pin TTL300000, JSON8KiB, IP5/900000ms, aggregate20/3600000ms, reads60/minute and max5 password submissions. Assert commit failure/worker stop failure means no Set-Cookie for cabinet and no partial DB state.
 
 ```ts
 assert.equal(foreignAttemptResponse.status, 404);
@@ -131,10 +131,10 @@ assert.equal(failedCompleteResponse.headers.get('set-cookie'), null);
 assert.equal(capacityResponse.status, 503);
 assert.equal(capacityResponse.headers.get('retry-after'), '30');
 ```
-- [ ] **Step 2:** Run `npx tsx --test src/__tests__/saas-telegram-auth-attempts.test.ts src/__tests__/saas-telegram-auth-routes.test.ts src/__tests__/saas-routes.test.ts`; expected missing-route/ownership failures.
-- [ ] **Step 3:** Implement coordinator and routes, reuse/export the existing SaaS cookie issuance helpers. Apply actual-start limits only to worker-start POST; do not charge context-only POST against registration limits. Enforce terminal state cleanup/no plaintext logs, single owner attempt, cancellation abort and shutdown close. Make existing disconnect preserve identity while stopping worker/deleting encrypted session/revoking grants; delete cascades identity; late legacy login must match an existing binding. Preserve account deletion for passwordless users: explicit `{ confirm: true }` plus current cookie whose server authenticatedAt is at most300000ms old; otherwise 403 `reauthentication-required`. Legacy deletion still checks its password. Add tests for fresh/stale passwordless delete, identity cascading and current-cookie recheck after awaited teardown.
-- [ ] **Step 4:** Run targeted tests plus `npm run typecheck` and `npm run lint`; expected pass. Confirm no user/account exists before a verified complete and no protected API becomes anonymous.
-- [ ] **Step 5:** Commit `[Feature] Auth: Expose secure unified Telegram login endpoints`.
+- [x] **Step 2:** Run `npx tsx --test src/__tests__/saas-telegram-auth-attempts.test.ts src/__tests__/saas-telegram-auth-routes.test.ts src/__tests__/saas-routes.test.ts`; expected missing-route/ownership failures.
+- [x] **Step 3:** Implement coordinator and routes, reuse/export the existing SaaS cookie issuance helpers. Apply actual-start limits only to worker-start POST; do not charge context-only POST against registration limits. Enforce terminal state cleanup/no plaintext logs, single owner attempt, cancellation abort and shutdown close. Make existing disconnect preserve identity while stopping worker/deleting encrypted session/revoking grants; delete cascades identity; late legacy login must match an existing binding. Preserve account deletion for passwordless users: explicit `{ confirm: true }` plus current cookie whose server authenticatedAt is at most300000ms old; otherwise 403 `reauthentication-required`. Legacy deletion still checks its password. Add tests for fresh/stale passwordless delete, identity cascading and current-cookie recheck after awaited teardown.
+- [x] **Step 4:** Run targeted tests plus `npm run typecheck` and `npm run lint`; expected pass. Confirm no user/account exists before a verified complete and no protected API becomes anonymous.
+- [x] **Step 5:** Commit `[Feature] Auth: Expose secure unified Telegram login endpoints`.
 
 ### Task 4: Reuse cabinet authentication in OAuth with bounded continuation
 
@@ -147,7 +147,7 @@ assert.equal(capacityResponse.headers.get('retry-after'), '30');
 - Add the optional continuation handle to pre-auth start/complete options; handle only references validated server interaction state. Successful completion returns a same-origin `/interaction/<uid>` continuation, never a user-provided URL. Gateway confirms provider cookie ownership, UID/client match and fresh binding again.
 - Use Task1's `BrowserSession.authenticatedAt` in API internals, never frontend input. Freshness comes from server proof time; legacy migrated value0 fails freshness checks.
 
-- [ ] **Step 1:** Write failing tests `existing_cabinet_cookie_skips_password_but_not_consent`, `expired_or_foreign_interaction_is_rejected`, `continuation_cannot_redirect_off_origin`, `prompt_login_and_max_age_require_new_proof`, `prompt_none_returns_login_required`, `credential_reset_during_continuation_denies_old_session`, `owner_gateway_keeps_password_flow`. Complete DCR/PKCE → explicit consent → token → MCP; assert grants bind the same cabinet ID and policy; native form CSP still permits the validated client callback.
+- [x] **Step 1:** Write failing tests `existing_cabinet_cookie_skips_password_but_not_consent`, `expired_or_foreign_interaction_is_rejected`, `continuation_cannot_redirect_off_origin`, `prompt_login_and_max_age_require_new_proof`, `prompt_none_returns_login_required`, `credential_reset_during_continuation_denies_old_session`, `owner_gateway_keeps_password_flow`. Complete DCR/PKCE → explicit consent → token → MCP; assert grants bind the same cabinet ID and policy; native form CSP still permits the validated client callback.
 
 ```ts
 assert.equal(consentPage.status, 200);
@@ -156,10 +156,10 @@ assert.equal(tokenResponse.status, 200);
 assert.equal(authenticatedMcpResponse.status, 200);
 assert.equal(continuations.consume(handle, otherContextHash), undefined);
 ```
-- [ ] **Step 2:** Run `npx tsx --test src/__tests__/saas-oauth.test.ts src/__tests__/http-gateway.test.ts`; record fails for new cookie/continuation behavior.
-- [ ] **Step 3:** Implement cookie account choice on login interaction with protected POST, never silently authorize consent. Without usable cookie, render own-origin unified login entry/continuation and legacy login fallback. Integrate oidc-provider prompt/max_age using current provider API; preserve PKCE, audience/resource, DCR, no-referrer global default, interaction same-origin referrer and per-client form-action CSP.
-- [ ] **Step 4:** Run targeted tests and `npm run typecheck`; expected pass including mixed user cookie/provider-session mismatch, credential recovery and unchanged owner mode.
-- [ ] **Step 5:** Commit `[Feature] OAuth: Reuse verified Telegram cabinet login`.
+- [x] **Step 2:** Run `npx tsx --test src/__tests__/saas-oauth.test.ts src/__tests__/http-gateway.test.ts`; record fails for new cookie/continuation behavior.
+- [x] **Step 3:** Implement cookie account choice on login interaction with protected POST, never silently authorize consent. Without usable cookie, render own-origin unified login entry/continuation and legacy login fallback. Integrate oidc-provider prompt/max_age using current provider API; preserve PKCE, audience/resource, DCR, no-referrer global default, interaction same-origin referrer and per-client form-action CSP.
+- [x] **Step 4:** Run targeted tests and `npm run typecheck`; expected pass including mixed user cookie/provider-session mismatch, credential recovery and unchanged owner mode.
+- [x] **Step 5:** Commit `[Feature] OAuth: Reuse verified Telegram cabinet login`.
 
 ### Task 5: Web A bridge and unified login interface
 
@@ -171,12 +171,12 @@ assert.equal(continuations.consume(handle, otherContextHash), undefined);
 - `McpUnifiedLogin.tsx` owns localized bridge/2FA/legacy-link feedback and uses controller; initial unchecked opt-in lives in auth/global state until readiness, cancellation or logout. Ready auth with opt-in opens this flow once; chat-only readiness does nothing.
 - OAuth entry receives only bounded opaque continuation handle, starts Web A auth if needed, then explicit MCP bridge; validated server return continues via native same-origin navigation.
 
-- [ ] **Step 1:** Record baseline browser behavior and read `apps/web/AGENTS.md`. Add no frontend test files. Reuse localhost1234 if running; otherwise `npm --prefix apps/web run dev`. Verify worker API export paths and account-switch lifecycle before editing them.
-- [ ] **Step 2:** Add `auth.acceptLoginToken` to `apps/web/src/lib/gramjs/tl/static/api.json`, run `npm --prefix apps/web run gramjs:tl`, implement method at the worker boundary and regenerate declared method types as the current code requires.
-- [ ] **Step 3:** Implement controller and components; replace default password login with «Войти через Telegram»/«Подключить MCP к этому аккаунту», retaining legacy fallback. Add unchecked «Также подключить MCP» and localized persistent-access explanation on initial auth screen. On server2FA request clear input after submit/cancel and do not reuse Web A password. Update auth/logout/account-switch hooks: cancel old attempts, revoke former SaaS cookie, clear UI before new account response; persistent MCP remains active until explicit disconnect. Use hasPassword to select account-deletion confirmation: legacy password or explicit passwordless confirm; reauthentication-required opens unified login, then asks for deletion confirmation again rather than deleting automatically.
-- [ ] **Step 4:** Implement mobile/light/dark styling in existing styles and fallback strings; run `npm --prefix apps/web run lang:ts`, `npm --prefix apps/web run check:ts`, `npm --prefix apps/web run check:css` when SCSS changed. Expected checks pass; use existing import autofix workflow.
-- [ ] **Step 5:** Run a local HTTPS real-browser probe with isolated Telegram fixtures: chat-only creates zero server workers; opted-in shows one Web A QR; browser accepts server token without another QR; 2FA/error/expiry/cancel/legacy-link are visible; user switch during request discards former result; no password or session is retained in storage; cabinet cookie drives explicit OAuth consent. Capture desktop/mobile/light/dark screenshots; fixture test evidence is not genuine Telegram acceptance.
-- [ ] **Step 6:** Commit `[Feature] Web A: Add unified Telegram and MCP sign in`.
+- [x] **Step 1:** Record baseline browser behavior and read `apps/web/AGENTS.md`. Add no frontend test files. Reuse localhost1234 if running; otherwise `npm --prefix apps/web run dev`. Verify worker API export paths and account-switch lifecycle before editing them.
+- [x] **Step 2:** Add `auth.acceptLoginToken` to `apps/web/src/lib/gramjs/tl/static/api.json`, run `npm --prefix apps/web run gramjs:tl`, implement method at the worker boundary and regenerate declared method types as the current code requires.
+- [x] **Step 3:** Implement controller and components; replace default password login with «Войти через Telegram»/«Подключить MCP к этому аккаунту», retaining legacy fallback. Add unchecked «Также подключить MCP» and localized persistent-access explanation on initial auth screen. On server2FA request clear input after submit/cancel and do not reuse Web A password. Update auth/logout/account-switch hooks: cancel old attempts, revoke former SaaS cookie, clear UI before new account response; persistent MCP remains active until explicit disconnect. Use hasPassword to select account-deletion confirmation: legacy password or explicit passwordless confirm; reauthentication-required opens unified login, then asks for deletion confirmation again rather than deleting automatically.
+- [x] **Step 4:** Implement mobile/light/dark styling in existing styles and fallback strings; run `npm --prefix apps/web run lang:ts`, `npm --prefix apps/web run check:ts`, `npm --prefix apps/web run check:css` when SCSS changed. Expected checks pass; use existing import autofix workflow.
+- [x] **Step 5:** Run a local HTTPS real-browser probe with isolated Telegram fixtures: chat-only creates zero server workers; opted-in shows one Web A QR; browser accepts server token without another QR; 2FA/error/expiry/cancel/legacy-link are visible; user switch during request discards former result; no password or session is retained in storage; cabinet cookie drives explicit OAuth consent. Capture desktop/mobile/light/dark screenshots; fixture test evidence is not genuine Telegram acceptance.
+- [x] **Step 6:** Commit `[Feature] Web A: Add unified Telegram and MCP sign in`.
 
 ### Task 6: Acceptance, integration and scoped production deploy
 
@@ -191,6 +191,10 @@ assert.equal(continuations.consume(handle, otherContextHash), undefined);
 - [ ] **Step 5:** Create/attach PR against `terowoc/mcp-telegram` main with final behavior and local validation. Within existing user deployment authorization, integrate and monitor immutable Actions image → deploy. Before deploy record 57-container baseline afresh, validate only target preflight and snapshot; verify scoped container healthy, key matches, HTTPS/discovery/frontend/API and unchanged unrelated containers after deployment.
 - [ ] **Step 6:** Run one public isolated real-browser OAuth probe with no genuine Telegram credentials/messages; delete its account afterward. Ask human to perform actual initial QR/2FA and confirm server ID matches Web A, protected MCP status works with browser closed and server session survives a target-only restart when agreed. Do not claim genuine Telegram acceptance from fixtures.
 - [ ] **Step 7:** Record exact commit/image/run, check results and genuine-login acceptance or remaining human step. Mark only completed checkboxes; final response states deployed changes, how verified and any remaining actual-account acceptance.
+
+## Execution evidence
+
+Tasks 1–5 are committed on `codex/unified-telegram-login-implementation`. Local HTTPS browser fixtures cover opt-in/bridge, 2FA, manual QR, cancellation, legacy linking, expiry and account switching; they do not prove genuine Telegram acceptance. Existing frontend lifecycle tests now assert clear/revoke on switching; no new frontend test files were added. The actual logout hooks are `global/actions/api/initial.ts`; the opt-in stays in shared memory and is rendered inside QR/phone forms. Context-wide `/telegram-auth/revoke` fences stale-tab completion after teardown.
 
 ## Self-Review / Handoff
 

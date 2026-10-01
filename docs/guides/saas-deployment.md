@@ -8,7 +8,7 @@
 
 Установите проверенные `scripts/deploy-vps.sh` и `scripts/initialize-saas.sh` в приватный `/opt/mcp-telegram`, сохранив существующий forced SSH command и права root. Выполните инициализацию от root из этого каталога. Она создаёт новый 32-байтный `session-key.bin` с правами 0600 и владельцем 1000, а также отдельную приватную резервную копию. Существующий ключ не заменяется. Не публикуйте ключ, резервную копию, `telegram.env` или базы.
 
-Старые owner-only OAuth разрешения остаются в старом каталоге для отката. Пользователи SaaS выполняют новую регистрацию, OAuth-согласие и отдельный QR-вход Telegram. Браузерный вход не переносит ключи на сервер.
+Старые owner-only OAuth разрешения остаются в старом каталоге для отката. Новые пользователи входят через Telegram Web A и при желании отмечают «Также подключить MCP». Браузер подтверждает свежий серверный токен без второго QR; ключи браузерной сессии не переносятся. Сервер проверяет getMe и создаёт кабинет без пароля. Прежние кабинеты связываются только с явным подтверждением их пароля. OAuth-согласие остаётся обязательным.
 
 ## Ограничение ресурсов
 
@@ -26,7 +26,7 @@ GitHub Actions выполняет только сборку и деплой: п�
 
 ## Проверка после публикации
 
-Проверьте `/healthz`, корневой интерфейс, `/source/LICENSE.txt`, discovery и 401 на неавторизованном `/mcp`. Зарегистрируйте изолированный тестовый аккаунт, сохраните коды восстановления, войдите в Telegram в браузере и отдельно отсканируйте QR для MCP. Убедитесь, что кабинет показывает правильный аккаунт и сохраняет MCP-сессию после перезапуска только этого сервиса. Проверка не требует отправки настоящих сообщений.
+Проверьте `/healthz`, корневой интерфейс, `/source/LICENSE.txt`, discovery и 401 на неавторизованном `/mcp`. Для настоящей проверки войдите в Telegram в браузере, отметив «Также подключить MCP», или подключите текущий аккаунт из раздела MCP. Обычно второй QR не нужен; Telegram может запросить серверную 2FA. Изолированные автоматические проверки используют синтетические сессии и не подтверждают настоящий вход Telegram. Убедитесь, что кабинет показывает правильный аккаунт и сохраняет MCP-сессию после перезапуска только этого сервиса. Проверка не требует отправки настоящих сообщений.
 
 ## Recovery and storage bounds
 
@@ -35,3 +35,5 @@ Password recovery replaces all eight recovery codes atomically and displays the 
 MCP media downloads have a 20 MiB file limit, 100 MiB / 100 files per user and 500 MiB / 1000 files across the service. Admission reserves a full file before dispatch, retains that reservation until the worker physically settles, and leaves at least 256 MiB free on the media filesystem. Stored files count after restart. Quota errors refuse the download before writing; deleting a TG Bridge account purges its media. Administrators can remove expired media during maintenance after stopping the target service. These bounds cover the application media volume, not disk growth from unrelated projects or logs.
 
 `MCP_ALLOWED_ORIGINS` is a comma-separated list of exact HTTPS origins for browser MCP requests. It applies to `/mcp`; browser SaaS account mutations still require the application's own origin and CSRF token.
+
+При обновлении схема SaaS переходит с v2 на v3. Снимок до остановленного обновления должен включать обе базы с WAL, конфигурацию и image digest. Временные процессы единого входа расходуют общий лимит worker (на текущем VPS — 2) и завершаются до закрытия баз. Ключ шифрования сохраняется за пределами снимка и не меняется при миграции.
