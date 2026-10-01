@@ -19,5 +19,4 @@ qr-login.*
 **/test-results
 **/playwright-report
 **/.env*
-!apps/web/.env.example
 artifacts

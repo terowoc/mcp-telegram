@@ -25,6 +25,12 @@ export function mountSaasFrontend(app: express.Express, options: { root: string;
     });
     next();
   });
+  app.get(/^\/service\.worker-[A-Za-z0-9_-]+\.js$/, (_req, res) => {
+    res
+      .set("Service-Worker-Allowed", "/")
+      .type("application/javascript")
+      .sendFile("retire-worker.js", { root: options.root });
+  });
   app.use(
     express.static(options.root, {
       dotfiles: "deny",

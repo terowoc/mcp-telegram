@@ -1,30 +1,14 @@
-# Telegram Web A и MCP
+# Telegram MCP dashboard
 
-TG Bridge использует Telegram Web A: настоящие чаты, поиск и медиа работают через браузерный MTProto-клиент. В меню доступен раздел **MCP и AI-клиенты** с отдельным бесплатным аккаунтом TG Bridge.
-
-## Два входа
-
-Вход в Telegram в браузере открывает чаты. Для AI-клиентов нужен отдельный вход по QR в разделе MCP: это самостоятельное устройство Telegram. Браузерные ключи авторизации не передаются серверу. Кабинет показывает оба аккаунта и предупреждает, если они отличаются.
-
-Зарегистрируйте аккаунт TG Bridge, сохраните одноразовые коды восстановления и подключите Telegram для MCP. При двухэтапной аутентификации введите облачный пароль в кабинете. Пароли и QR не сохраняются в кеше интерфейса; закрытие панели отменяет незавершённую попытку входа.
-
-Права по умолчанию разрешают только чтение. Режим изменения и список разрешённых чатов задаются отдельно. Изменение прав отзывает текущие разрешения AI-клиентов. Для подключения используется `https://tg-mcp.azimboev.uz/mcp` и OAuth; совместимый клиент выполняет вход и запрашивает согласие на доступ.
-
-## Сборка
-
-Фронтенд требует Node 24.15+ или Node 26 и npm 11+. Серверные и браузерные реквизиты Telegram независимы. Значения `WEB_TELEGRAM_API_ID` и `WEB_TELEGRAM_API_HASH` будут публичными в браузерной сборке. Приватные серверные ключи туда не включаются.
+The public app is a Telegram-style MCP cabinet. It provides registration, recovery codes, a server QR + 2FA Telegram connection, MCP endpoint/configuration information, access policy, client revocation, logout and account deletion. It has no chat reader, composer, browser MTProto or Telegram session.
 
 ```sh
-npm --prefix apps/web ci --allow-git=all
-npm run web:build:mocked
+npm ci
+npm run web:build
 npm run web:check
-npm run web:test -- --run
+npm run web:dev
 ```
 
-Для настоящего клиента задайте отдельные публичные браузерные реквизиты и выполните `npm run web:build`. Сборка без них завершается ошибкой. Тестовый клиент применяется только в режиме `mocked`; он не связывается с Telegram.
+The source is in `apps/dashboard`; production output is `apps/dashboard/dist`. The build uses the existing root TypeScript compiler, copies local CSS/SVG and fingerprints assets. No browser Telegram credentials or environment files are embedded. `web:dev` previews static files on localhost:1234; API flows require a local backend or an isolated fixture.
 
-## Исходный код и лицензия
-
-Фронтенд: GPL-3.0-or-later; сервер: MIT. Точный upstream commit и инструкции обновления находятся в `apps/web/UPSTREAM.md`. Кнопка исходников в кабинете открывает `/source/tg-bridge-source.tar.gz`. Архив содержит зафиксированный список исходников, lockfile, лицензии и скрипты сборки; файлы окружения, зависимости, сессии и базы не входят в него. Контрольная сумма доступна в `/source/SHA256SUMS`.
-
-При добавлении исходного файла обновите `apps/web/SOURCE_FILES.json`: это явный список файлов для распространяемой сборки. Сборщик не ищет произвольные файлы на диске. Обновление service worker очищает кеш статических ресурсов; пути API, OAuth, MCP и discovery обходят этот кеш. Браузерные Telegram-сессии сохраняет существующий механизм Web A.
+Production serves the dashboard from the same HTTPS origin as the SaaS API and OAuth. CSP limits connections to that origin and forbids browser workers. No service worker is installed. Previous Telegram Web worker URLs serve a one-time retirement script; old client caches and browser credentials are cleared when users load the cabinet.

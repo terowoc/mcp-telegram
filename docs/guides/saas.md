@@ -1,16 +1,16 @@
 # Free public SaaS mode
 
-TG Bridge provides passwordless Telegram cabinets and OAuth access to Telegram MCP. Start the backend with `node dist/cli.js saas`. The existing `http`, `serve`, `login` and stdio modes remain available. The browser frontend is built separately from the server.
+Telegram MCP provides a free public cabinet with a Telegram-style interface and OAuth access to MCP. Start the backend with `node dist/cli.js saas`. The `http`, `serve`, `login` and stdio modes remain available.
 
-## Unified Telegram sign in
+## Registration and Telegram connection
 
-Sign into Telegram Web A and optionally select **Также подключить MCP** (unchecked by default). Chat-only sign in creates no server account or MCP session. The authorized browser accepts a fresh server login token; the server verifies its own `getMe`, binds the numeric Telegram identity and creates a passwordless cabinet with read access. Browser and server keep independent MTProto keys. The browser session is never exported.
+Register a cabinet with a login (3-32 Latin letters, digits or underscores) and a password of at least 16 characters. Save the eight recovery codes shown once. Then connect your own Telegram using the server QR; enter the Telegram cloud password if 2FA is enabled. The cabinet runs no Telegram Web client, browser MTProto worker, or browser Telegram session.
 
-An existing browser Telegram account can use **Подключить MCP к этому аккаунту** in the MCP section. Telegram may require a separate server 2FA confirmation; that password is cleared after submission and never reused from Web A. **Запасной способ: отдельный QR** remains available if the bridge cannot finish. The MCP session stays active after closing the browser until explicitly disconnected.
+The server verifies `getMe` before persisting the encrypted session. All authorized MCP clients share that account's server session. Signing out of the cabinet keeps Telegram connected; disconnecting Telegram removes the stored session and OAuth grants. Account deletion requires the cabinet password and removes the account, grants and its media.
 
-Existing password cabinets remain available through **Войти в прежний кабинет**. Linking requires its current cabinet cookie and a freshly verified password; a server-verified Telegram ID resolves ownership. Duplicate legacy cabinets for one Telegram account are never merged automatically. A linked cabinet keeps its policy and saved session. Disconnect removes server access and grants but preserves the identity; deletion removes the cabinet and identity. Passwordless deletion requires explicit confirmation and server authentication within five minutes. If a fresh login is required, confirm deletion again afterward.
+After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Streamable HTTP transport, OAuth connection instructions and example client configurations. Users can set read-only or full access, restrict chat IDs and revoke individual clients.
 
-AI clients connect to `/mcp`. An open cabinet supplies OAuth authentication; the client still requires an explicit access confirmation. `prompt=login` and `max_age` require fresh authentication where applicable. Expired or cancelled login continuations must be restarted from the client. Web A logout or account switching cancels bootstrap login contexts and revokes the former cabinet cookie; persistent MCP access ends only on disconnect or account deletion.
+AI clients authenticate through the same cabinet registration/login and still need explicit OAuth consent. `prompt=login` and `max_age` require fresh authentication when applicable. Expired continuations must be restarted from the client. Existing accounts are removed for this release by the owner's explicit request; users register again.
 
 ## Storage and configuration
 
@@ -31,7 +31,7 @@ Server Telegram sessions are encrypted with AES-256-GCM, including the user ID a
 
 The default limit is 100 registered accounts and four active Telegram workers. Each worker has a fixed account, policy, generation and media directory; the parent process retains the encryption key. Worker environments do not inherit server secrets or a global 2FA password. Each process has a 256 MiB V8 heap limit; production containers must separately constrain total memory, CPU and PIDs.
 
-Starting and stopping workers occupy capacity until the child exits. Idle workers stop after five minutes. Tools have a 28-second deadline and a five-second settlement watchdog. A cancelled operation cannot release its exclusivity while Telegram is still settling. Capacity replies use HTTP 503 with `Retry-After`; account or worker capacity does not change the public `/healthz` response while the control service remains healthy.
+Starting and stopping workers occupy capacity until the child exits. Idle workers stop after 30 minutes (configurable with `MCP_SAAS_WORKER_IDLE_MS`) or are evicted when an idle slot is needed. Tools have a 28-second execution deadline and a five-second settlement watchdog. A cancelled operation cannot release its exclusivity while Telegram is still settling. Capacity replies use HTTP 503 with `Retry-After`; account or worker capacity does not change the public `/healthz` response while the control service remains healthy.
 
 SIGTERM stops admission, cancels pending QR attempts and terminates all children before closing OAuth and account storage. Media files belong to fixed user directories; deleting an account stops its worker, removes media and deletes its database records.
 
@@ -41,19 +41,14 @@ All paths below are under `/api/saas`. Responses use `Cache-Control: no-store`. 
 
 | Method and path | Request or result |
 | --- | --- |
-| `POST /telegram-auth/start` | First POST issues a five-minute bootstrap cookie and CSRF without a worker. Repeat with CSRF starts a cookie-owned attempt; optional opaque OAuth continuation. |
-| `GET /telegram-auth/:id` | Public token/2FA/verified state; server proof and session remain private. Foreign contexts cannot read it. |
-| `POST /telegram-auth/:id/password` | Server 2FA, bounded to five submissions. |
-| `POST /telegram-auth/:id/complete` | Exclusive verified completion; optional `legacyPassword` links the authenticated old cabinet. Issues the cabinet cookie once. |
-| `DELETE /telegram-auth/:id` | Cancels and reaps the temporary worker. |
-| `POST /telegram-auth/revoke` | Clears the bootstrap context before awaiting worker teardown; fences old-tab completion. |
-| `POST /telegram-auth/resume` | Returns only a server-validated, same-origin OAuth interaction for an authenticated cabinet. |
+| `POST /oauth/resume` | Cabinet cookie, cabinet CSRF and a context-bound opaque continuation; returns a same-origin OAuth interaction. |
 | `POST /register` | `{login,password}` → `{user,csrfToken,recoveryCodes}`. Show recovery codes once. |
 | `POST /login` | `{login,password}` → `{user,csrfToken}`. |
 | `POST /recover` | `{login,recoveryCode,newPassword}`. Revokes browser sessions and all grants; consumes all old recovery codes. |
 | `POST /logout` | Ends this browser session and clears pending server QR state. |
 | `GET /me` | `{user:{id,login,hasPassword},csrfToken,policy,telegram,mcpUrl}`. Telegram contains process state, busy, sessionPresent and the verified account identity when saved. |
 | `POST /telegram/login` | Starts one user-bound attempt, returns `{id,state,expiresAt}` with HTTP 202. |
+| `GET /telegram/login` | Returns the current active attempt owned by this cabinet, without starting a worker or creating a session. |
 | `GET /telegram/login/:id` | Latest state: connecting, qr, needs-password, success, error, cancelled or expired. QR state includes a PNG data URL; success includes account ID and optional username. |
 | `POST /telegram/login/:id/password` | `{password}` accepted only while that attempt is waiting for 2FA. Never persisted or included in DTOs. |
 | `DELETE /telegram/login/:id` | Cancels the attempt. Foreign or expired IDs return 404. |
@@ -61,14 +56,14 @@ All paths below are under `/api/saas`. Responses use `Cache-Control: no-store`. 
 | `DELETE /clients/:grantId` | Revokes only the authenticated user's grant. |
 | `PUT /policy` | `{profile:"read"\|"full",chatIds:string[]}`. Numeric chat IDs, at most 100. Bumps policy version, revokes grants and stops the old worker. |
 | `POST /telegram/disconnect` | Removes this user's server session and grants and stops its worker. |
-| `DELETE /account` | `{password}` confirms legacy deletion; passwordless accounts use `{confirm:true}` and fresh authentication. Access is disabled before storage is purged. |
+| `DELETE /account` | `{password}` confirms deletion. Access is disabled before storage is purged. |
 
 Logins use 3–32 ASCII letters, digits or underscores, normalized to lowercase. Passwords require 16–1024 characters. Registration is limited to five requests per IP per hour and 20 globally per hour. Login/recovery share ten attempts per IP per 15 minutes. Authenticated API access is limited to 120 requests per user per minute and the API as a whole to 600 per minute. QR starts are limited to three per user per ten minutes, with a five-minute deadline and six-minute attempt retention.
 
-## MCP and browser Telegram sessions
+## MCP and the server Telegram session
 
-Connect MCP clients to the public `/mcp` endpoint using the advertised OAuth discovery endpoints. PKCE is required. Each consent grant binds an enabled SaaS account and policy version. The binding is checked on every MCP request and before refreshing tokens, so failed asynchronous provider cleanup cannot restore revoked access. Read-only policy filters both tool listing and calls. Before Telegram setup only `telegram-status` is available. QR login and disconnect are controlled through the browser API.
+Connect MCP clients to the public `/mcp` endpoint using the advertised OAuth discovery endpoints. PKCE is required. Each consent grant binds an enabled SaaS account and policy version. The binding is checked on every MCP request and before refreshing tokens, so failed asynchronous provider cleanup cannot restore revoked access. Read-only policy filters both tool listing and calls. Before Telegram setup only `telegram-status` is available. QR login and disconnect are controlled through the cabinet API.
 
-Telegram Web A keeps its browser MTProto session, while the unified login authorizes a separate server device for MCP. Logging out of TG Bridge or disconnecting MCP does not log out Telegram Web A. The UI must display both account identities and warn when they differ. Configure public browser application credentials explicitly; frontend builds never inherit server environment files. The owner may authorize the same application values for both, accepting that the browser API hash is public.
+The dashboard talks only to its own origin. It cannot contact Telegram directly, start a browser worker or persist a browser Telegram session. Former hashed Telegram Web service worker URLs serve a one-time retirement script, and the cabinet clears the old client caches and browser session data on this origin.
 
-Bootstrap worker starts allow 5/15 minutes/IP and 20/hour/service, with a five-minute attempt deadline and 60 status reads/minute/context. Temporary and persistent processes share the same worker budget; promotion waits for actual temporary process exit. Schema version 3 preserves legacy records and adds nullable passwords, unique Telegram identities, credential epochs and server authentication times. Restore the whole pre-migration snapshot with its matching image when rolling back.
+Storage remains schema version 3 for coherent rollback. Back up the full stopped service auth directory and preserve the encryption key separately. Removing old accounts is a one-time owner-authorized release action; subsequent deployments never reset accounts.

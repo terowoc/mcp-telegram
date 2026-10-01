@@ -5,7 +5,9 @@ import { z } from "zod";
 import { GlobalLock } from "../global-lock.js";
 import { verifyPassword } from "../http/owner.js";
 import { hashOpaqueToken, type SaasAuth } from "./auth.js";
+import type { BootstrapContexts } from "./bootstrap-contexts.js";
 import { LoginAttempts, type LoginSupervisor } from "./login-attempts.js";
+import type { OAuthContinuations } from "./oauth-continuations.js";
 import type { SaasStore } from "./store.js";
 import { CapacityError } from "./supervisor.js";
 
@@ -34,6 +36,7 @@ interface Options {
   publicUrl: string;
   revokeGrants: (ids: string[]) => Promise<void>;
   attempts?: LoginAttempts;
+  oauth?: { contexts: BootstrapContexts; continuations: OAuthContinuations };
   purgeUserFiles?: (userId: string) => Promise<void>;
 }
 export type SaasRouter = Router & { close: () => Promise<void> };
@@ -217,6 +220,20 @@ export function createSaasRoutes(options: Options): SaasRouter {
       mcpUrl: `${origin}/mcp`,
     });
   });
+  router.post("/oauth/resume", (req, res) => {
+    const parsed = z.object({ continuation: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).safeParse(req.body);
+    const context = options.oauth?.contexts.verify(req, false);
+    const continuation =
+      parsed.success && context
+        ? options.oauth?.continuations.consume(parsed.data.continuation, context.contextHash)
+        : undefined;
+    if (!continuation) {
+      res.status(409).json({ error: "continuation-expired" });
+      return;
+    }
+    options.oauth?.contexts.clear(req, res);
+    res.json({ continueTo: `/interaction/${continuation.interactionUid}` });
+  });
   router.post(
     "/logout",
     mutation(async (_req, res, userId) => {
@@ -233,6 +250,9 @@ export function createSaasRoutes(options: Options): SaasRouter {
       res.status(202).json(await attempts.start(userId));
     }),
   );
+  router.get("/telegram/login", (_req, res) => {
+    res.json({ attempt: attempts.getCurrent(res.locals.saas.userId) });
+  });
   router.get("/telegram/login/:attemptId", (req, res) => {
     const attempt = attempts.get(res.locals.saas.userId, String(req.params.attemptId));
     if (!attempt) {
