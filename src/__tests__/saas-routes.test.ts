@@ -265,3 +265,62 @@ test("capacity returns Retry-After and public registration is rate limited", asy
     await s.close();
   }
 });
+
+test("retrying Telegram connect resumes one QR without consuming the new-login quota", async () => {
+  const s = await setup();
+  try {
+    const a = s.jar();
+    await a.register("alice");
+    const started = await (await a.request("/telegram/login", "POST", {})).json();
+    for (let i = 0; i < 6; i++) {
+      const retry = await a.request("/telegram/login", "POST", {});
+      assert.equal(retry.status, 202);
+      assert.equal((await retry.json()).id, started.id);
+    }
+    assert.equal(s.supervisor.events.size, 1);
+    assert.equal((await a.request(`/telegram/login/${started.id}`, "DELETE")).status, 204);
+    const next = await a.request("/telegram/login", "POST", {});
+    assert.equal(next.status, 202);
+    assert.notEqual((await next.json()).id, started.id);
+  } finally {
+    await s.close();
+  }
+});
+
+test("connect cannot replace an already linked Telegram session", async () => {
+  const s = await setup();
+  try {
+    const a = s.jar();
+    await a.register("alice");
+    const user = s.store.findByLogin("alice");
+    assert.ok(user);
+    s.store.putEncryptedSession(user.id, "existing-encrypted-session");
+    s.supervisor.status = () => ({ state: "stopped", busy: false, sessionPresent: true });
+    const response = await a.request("/telegram/login", "POST", {});
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "telegram-already-connected" });
+    assert.equal(s.supervisor.events.size, 0);
+    assert.equal(s.store.getEncryptedSession(user.id), "existing-encrypted-session");
+  } finally {
+    await s.close();
+  }
+});
+
+test("authenticated cabinet polling does not exhaust the anonymous global quota", async () => {
+  const s = await setup();
+  try {
+    for (let account = 0; account < 6; account++) {
+      const session = await s.auth.register(`user${account}`, password);
+      const a = s.jar();
+      for (let poll = 0; poll < 110; poll++) {
+        const response = await a.request("/telegram/login", "GET", undefined, {
+          cookie: `__Host-mcp-saas=${session.sessionToken}`,
+        });
+        assert.equal(response.status, 200);
+      }
+    }
+    assert.equal((await s.jar().request("/me")).status, 401);
+  } finally {
+    await s.close();
+  }
+});

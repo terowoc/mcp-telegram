@@ -29,6 +29,8 @@ export function createMcpHandler(identity: GatewayIdentity, version: string) {
         if (!identity.isActive(accountId) || !identity.isGrantValid(accountId, grantId))
           throw new Error("MCP access revoked");
         const result = await identity.callTool(accountId, name, args, callOptions);
+        if (!identity.isActive(accountId) || !identity.isGrantValid(accountId, grantId))
+          throw new Error("MCP access revoked");
         if (Buffer.byteLength(JSON.stringify(result)) > 2 * 1048576 - 1024)
           throw new Error("Tool response exceeds hosted output limit; use pagination");
         return result;

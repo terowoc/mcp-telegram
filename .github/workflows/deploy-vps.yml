@@ -62,5 +62,6 @@ jobs:
           [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           printf '%s' "$GHCR_TOKEN" | ssh -i "$key_path" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$hosts_path" -o ConnectTimeout=15 \
+            -o UserKnownHostsFile="$hosts_path" -o ConnectTimeout=20 -o ConnectionAttempts=3 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
             "$VPS_USER@$VPS_HOST" "deploy ghcr.io/terowoc/mcp-telegram@$IMAGE_DIGEST"

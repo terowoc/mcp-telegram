@@ -63,6 +63,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
     windowMs: number,
     count: number,
     keyGenerator?: NonNullable<Parameters<typeof rateLimit>[0]>["keyGenerator"],
+    skip?: NonNullable<Parameters<typeof rateLimit>[0]>["skip"],
   ) =>
     rateLimit({
       windowMs,
@@ -70,6 +71,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       standardHeaders: "draft-8",
       legacyHeaders: false,
       keyGenerator,
+      skip,
       message: { error: "rate-limited" },
     });
   router.use((_req, res, next) => {
@@ -83,7 +85,18 @@ export function createSaasRoutes(options: Options): SaasRouter {
     }
     next();
   });
-  router.use(limit(60000, 600, () => "all"));
+  router.use((req, res, next) => {
+    res.locals.saas = auth.authenticate(saasCookie(req));
+    next();
+  });
+  router.use(
+    limit(
+      60000,
+      600,
+      () => "all",
+      (_req, res) => !!res.locals.saas,
+    ),
+  );
   const loginLimit = limit(900000, 10),
     registrationLimit = limit(3600000, 5),
     aggregateRegistration = limit(3600000, 20, () => "all");
@@ -153,7 +166,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
     res.json({ ok: true, recoveryCodes: recovered.recoveryCodes });
   });
   router.use((req, res, next) => {
-    const session = auth.authenticate(saasCookie(req));
+    const session = res.locals.saas;
     if (!session) {
       res.status(401).json({ error: "authentication-required" });
       return;
@@ -245,8 +258,23 @@ export function createSaasRoutes(options: Options): SaasRouter {
   );
   router.post(
     "/telegram/login",
-    limit(600000, 3, (_req, res) => res.locals.saas.userId),
+    limit(
+      600000,
+      3,
+      (_req, res) => res.locals.saas.userId,
+      (_req, res) =>
+        !!attempts.getCurrent(res.locals.saas.userId) || supervisor.status(res.locals.saas.userId).sessionPresent,
+    ),
     mutation(async (_req, res, userId) => {
+      if (supervisor.status(userId).sessionPresent) {
+        res.status(409).json({ error: "telegram-already-connected" });
+        return;
+      }
+      const current = attempts.getCurrent(userId);
+      if (current) {
+        res.status(202).json(current);
+        return;
+      }
       res.status(202).json(await attempts.start(userId));
     }),
   );

@@ -573,3 +573,38 @@ test("remembered OAuth session cannot silently authorize a switched or logged-ou
     await s.close();
   }
 });
+
+test("MCP users sharing a client IP have independent quotas; invalid tokens keep an IP quota", async () => {
+  const s = await setup();
+  try {
+    const alice = await s.authorize("alice");
+    const bob = await s.authorize("bob");
+    for (let i = 0; i < 120; i++) assert.equal((await s.rpc(alice.tokens, "ping")).status, 200);
+    assert.equal((await s.rpc(alice.tokens, "ping")).status, 429);
+    assert.equal((await s.rpc(bob.tokens, "ping")).status, 200);
+    for (let i = 0; i < 120; i++) assert.equal((await s.rpc({ access_token: `invalid-${i}` }, "ping")).status, 401);
+    assert.equal((await s.rpc({ access_token: "invalid-last" }, "ping")).status, 429);
+    assert.equal((await s.rpc(bob.tokens, "ping")).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test("grant revocation during a pending tool suppresses its returned data", async () => {
+  const s = await setup();
+  try {
+    const issued = await s.authorize("alice");
+    s.store.putEncryptedSession(s.alice.userId, "fixture");
+    const grant = s.store.listGrants(s.alice.userId)[0];
+    s.identity.callTool = async () => {
+      s.store.revokeGrant(s.alice.userId, grant.grantId);
+      return { content: [{ type: "text", text: "private-data-after-revocation" }] };
+    };
+    const response = await s.rpc(issued.tokens, "tools/call", { name: "telegram-status", arguments: {} });
+    const value = await response.json();
+    assert.equal(value.result?.isError, true);
+    assert.equal(JSON.stringify(value).includes("private-data-after-revocation"), false);
+  } finally {
+    await s.close();
+  }
+});
