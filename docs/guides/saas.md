@@ -10,7 +10,7 @@ The server verifies `getMe` before persisting the encrypted session. All authori
 
 Retrying a connection request returns the current QR attempt instead of starting another one. Signing into the cabinet resumes an active attempt, and temporary status failures after QR approval are retried. A linked Telegram session cannot be replaced through the connect endpoint: disconnect it explicitly first.
 
-After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Streamable HTTP transport, OAuth connection instructions and example client configurations. Users can set read-only or full access, restrict chat IDs and revoke individual clients.
+After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Streamable HTTP transport, OAuth connection instructions and example client configurations. New accounts default to full access across all their chats, including sending messages and other changes after Telegram connection and OAuth approval. Users can select read-only access, restrict chat IDs and revoke individual clients. This default does not change existing accounts’ saved permissions or grants.
 
 AI clients authenticate through the same cabinet registration/login and still need explicit OAuth consent. `prompt=login` and `max_age` require fresh authentication when applicable. Expired continuations must be restarted from the client. Existing accounts are removed for this release by the owner's explicit request; users register again.
 

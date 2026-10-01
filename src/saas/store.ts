@@ -124,7 +124,7 @@ export class SaasStore {
       const count = this.db.prepare("SELECT count(*) AS n FROM users").get() as { n: number };
       if (count.n >= this.maxUsers) throw new Error("Account capacity reached");
       const id = randomUUID();
-      const policy: UserPolicy = { profile: "read", chatIds: [], version: 1 };
+      const policy: UserPolicy = { profile: "full", chatIds: [], version: 1 };
       this.db
         .prepare("INSERT INTO users(id,login,password_hash,policy) VALUES(?,?,?,?)")
         .run(id, normalized, passwordHash, JSON.stringify(policy));
@@ -398,7 +398,7 @@ export class SaasStore {
         const login = `tg_${plan.userId.replaceAll("-", "").slice(0, 29)}`;
         this.db
           .prepare("INSERT INTO users(id,login,password_hash,credential_version,policy) VALUES(?,?,NULL,1,?)")
-          .run(plan.userId, login, JSON.stringify({ profile: "read", chatIds: [], version: 1 }));
+          .run(plan.userId, login, JSON.stringify({ profile: "full", chatIds: [], version: 1 }));
       } else if (plan.action === "link") {
         this.db.prepare("UPDATE users SET credential_version=credential_version+1 WHERE id=?").run(plan.userId);
         this.revokeUserSessions(plan.userId);

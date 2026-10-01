@@ -30,7 +30,7 @@ test("passwordless_login_requires_verified_proof", async () => {
     const a = auth.completeTelegramLogin(proof(), { vault });
     const user = store.findUser(a.userId)!;
     assert.equal(user.passwordHash, undefined);
-    assert.deepEqual(user.policy, { profile: "read", chatIds: [], version: 1 });
+    assert.deepEqual(user.policy, { profile: "full", chatIds: [], version: 1 });
     assert.equal(auth.authenticate(a.sessionToken)?.userId, user.id);
     assert.ok(auth.authenticate(a.sessionToken)?.authenticatedAt);
     assert.equal(await auth.login(user.login, "arbitrary long private password"), undefined);

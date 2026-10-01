@@ -119,7 +119,7 @@ test("anonymous and cross origin mutations are denied; secure cookies and redact
     assert.equal(response.headers.get("cache-control"), "no-store");
     const me = await response.json();
     assert.equal(me.user.login, "alice");
-    assert.equal(me.policy.profile, "read");
+    assert.equal(me.policy.profile, "full");
     assert.equal(me.mcpUrl, `${origin}/mcp`);
     assert.equal(JSON.stringify(me).includes("passwordHash"), false);
     assert.equal(
