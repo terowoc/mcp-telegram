@@ -1,9 +1,10 @@
 import type { fork } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import express from "express";
 import { createHttpGateway } from "../http/gateway.js";
+import { MediaUploadStore } from "../media-upload.js";
 import { SaasAuth } from "./auth.js";
 import { BootstrapContexts } from "./bootstrap-contexts.js";
 import { createSaasIdentity } from "./identity.js";
@@ -146,6 +147,26 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     purgeUserFiles: (userId) => rm(join(config.filesRoot, userId), { recursive: true, force: true }),
   });
   gateway.app.use("/api/saas", routes);
+  let pruning: Promise<void> | undefined;
+  const pruneMedia = () => {
+    if (pruning || closing) return;
+    pruning = (async () => {
+      for (const entry of await readdir(config.filesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name) || supervisor.status(entry.name).busy) continue;
+        // Grace exceeds the worker deadline, so an upload already in progress can settle.
+        await new MediaUploadStore({ root: join(config.filesRoot, entry.name) }).prune(60000);
+      }
+    })()
+      .catch(() => {
+        console.error("[media] Temporary media cleanup failed");
+      })
+      .finally(() => {
+        pruning = undefined;
+      });
+  };
+  const mediaCleanup = setInterval(pruneMedia, 5 * 60000);
+  mediaCleanup.unref();
+  pruneMedia();
   const app = express();
   app.disable("x-powered-by");
   app.use((_req, res, next) => {
@@ -161,9 +182,11 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    clearInterval(mediaCleanup);
     const workers = supervisor.close(); // forbid admission before draining browser attempts
     closePromise = (async () => {
       try {
+        await pruning;
         contexts.close();
         continuations.close();
         await routes.close();

@@ -23,7 +23,7 @@ export class SaasMediaBudget {
   private readonly maxUserFiles: number;
   private readonly maxTotalFiles: number;
   private readonly minFreeBytes: number;
-  private readonly reservations = new Map<string, number>();
+  private readonly reservations = new Map<string, Usage>();
   constructor(private options: Options) {
     this.root = resolve(options.root);
     this.maxFileBytes = options.maxFileBytes ?? 20 * MIB;
@@ -43,8 +43,12 @@ export class SaasMediaBudget {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid media storage budget");
   }
 
-  reserve(userId: string): () => void {
+  reserve(userId: string, request: { bytes?: number; files?: number } = {}): () => void {
     if (!/^[a-f0-9-]{36}$/.test(userId)) throw new Error("Invalid media user");
+    const bytes = request.bytes ?? this.maxFileBytes,
+      files = request.files ?? 1;
+    if (!Number.isSafeInteger(bytes) || bytes < 1 || !Number.isSafeInteger(files) || files < 1)
+      throw new Error("Invalid media reservation");
     const total: Usage = { bytes: 0, files: 0 },
       user: Usage = { bytes: 0, files: 0 };
     let entries = 0;
@@ -66,13 +70,16 @@ export class SaasMediaBudget {
       } else throw new Error("Media storage quota requires regular files");
     };
     scan(this.root, false);
-    const reserved = [...this.reservations.values()].reduce((sum, count) => sum + count, 0);
-    const own = this.reservations.get(userId) ?? 0;
+    const reserved = [...this.reservations.values()].reduce(
+      (sum, value) => ({ bytes: sum.bytes + value.bytes, files: sum.files + value.files }),
+      { bytes: 0, files: 0 },
+    );
+    const own = this.reservations.get(userId) ?? { bytes: 0, files: 0 };
     if (
-      user.bytes + (own + 1) * this.maxFileBytes > this.maxUserBytes ||
-      user.files + own + 1 > this.maxUserFiles ||
-      total.bytes + (reserved + 1) * this.maxFileBytes > this.maxTotalBytes ||
-      total.files + reserved + 1 > this.maxTotalFiles
+      user.bytes + own.bytes + bytes > this.maxUserBytes ||
+      user.files + own.files + files > this.maxUserFiles ||
+      total.bytes + reserved.bytes + bytes > this.maxTotalBytes ||
+      total.files + reserved.files + files > this.maxTotalFiles
     )
       throw new Error("Media storage quota reached");
     let available: number;
@@ -81,16 +88,16 @@ export class SaasMediaBudget {
       const disk = statfsSync(this.root);
       available = disk.bavail * disk.bsize;
     }
-    if (!Number.isFinite(available) || available - (reserved + 1) * this.maxFileBytes < this.minFreeBytes)
+    if (!Number.isFinite(available) || available - reserved.bytes - bytes < this.minFreeBytes)
       throw new Error("Media storage disk reserve reached");
-    this.reservations.set(userId, own + 1);
+    this.reservations.set(userId, { bytes: own.bytes + bytes, files: own.files + files });
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const count = this.reservations.get(userId) ?? 0;
-      if (count <= 1) this.reservations.delete(userId);
-      else this.reservations.set(userId, count - 1);
+      const current = this.reservations.get(userId);
+      if (!current || current.files <= files) this.reservations.delete(userId);
+      else this.reservations.set(userId, { bytes: current.bytes - bytes, files: current.files - files });
     };
   }
 }

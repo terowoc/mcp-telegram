@@ -1,17 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
-import {
-  ABSOLUTE_PATH_ERROR,
-  fail,
-  isSafeAbsolutePath,
-  ok,
-  requireConnection,
-  sanitizeInputText,
-  WRITE,
-} from "./shared.js";
+import { mediaSourceSchema, resolveMediaSource } from "./media-source.js";
+import { fail, ok, requireConnection, sanitizeInputText, WRITE } from "./shared.js";
 
-const absolutePath = z.string().min(1).refine(isSafeAbsolutePath, ABSOLUTE_PATH_ERROR);
 const safeText = z.string().transform(sanitizeInputText);
 
 const DICE_EMOJIS = ["🎲", "🎯", "🎰", "🏀", "⚽", "🎳"] as const;
@@ -23,9 +15,7 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
       description: "Send a voice note (audio recording) to a Telegram chat. Shows as a voice message with waveform UI.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username (e.g. @username or numeric ID)"),
-        filePath: absolutePath.describe(
-          "Absolute local filesystem path to audio file (OGG/Opus arrives as a voice message; other formats arrive as a regular audio file). URLs are rejected.",
-        ),
+        ...mediaSourceSchema,
         caption: safeText.optional().describe("Optional caption shown below the voice note"),
         replyTo: z.number().int().positive().optional().describe("Message ID to reply to"),
         topicId: z.number().int().positive().optional().describe("Forum topic ID (for groups with Topics enabled)"),
@@ -33,12 +23,14 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
       },
       annotations: WRITE,
     },
-    async ({ chatId, filePath, caption, replyTo, topicId, parseMode }) => {
+    async ({ chatId, filePath, fileId, fileUrl, fileName, caption, replyTo, topicId, parseMode }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        const { id } = await telegram.sendVoice(chatId, filePath, {
+        const path = await resolveMediaSource({ filePath, fileId, fileUrl, fileName });
+        const { id } = await telegram.sendVoice(chatId, path, {
+          fileName: filePath ? fileName : undefined,
           caption,
           replyTo,
           topicId,
@@ -58,9 +50,7 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
         "Send a video note (round-shaped short video) to a Telegram chat. Shows as a circular video in the UI.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
-        filePath: absolutePath.describe(
-          "Absolute local filesystem path to video file (MP4 preferred, square source recommended for best look). URLs are rejected.",
-        ),
+        ...mediaSourceSchema,
         duration: z.number().int().positive().max(60).optional().describe("Duration in seconds (Telegram caps at 60)"),
         length: z
           .number()
@@ -74,12 +64,13 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
       },
       annotations: WRITE,
     },
-    async ({ chatId, filePath, duration, length, replyTo, topicId }) => {
+    async ({ chatId, filePath, fileId, fileUrl, fileName, duration, length, replyTo, topicId }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        const { id } = await telegram.sendVideoNote(chatId, filePath, {
+        const path = await resolveMediaSource({ filePath, fileId, fileUrl, fileName });
+        const { id } = await telegram.sendVideoNote(chatId, path, {
           duration,
           length,
           replyTo,
@@ -269,19 +260,13 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
     "telegram-send-album",
     {
       description:
-        "Send an album (group) of 2-10 photos as a single grouped message. Media type is auto-detected " +
-        "by file extension — videos are supported by the underlying TL call but are not covered by v1.29.0 " +
-        "mock tests, so uniform-photo albums are the safer choice until a live checkpoint. Uploads are " +
-        "serial per item: expect ≈4-10s for 10 mid-size photos, 15-40s for 10 large videos. Prefer ≤5 " +
-        "items or photos when low latency matters.",
+        "Send an album of 2-10 photos/videos. Each item accepts fileId from telegram-upload-media, a public HTTPS fileUrl, or server-local filePath. For multiple remote items upload them first and use fileIds to keep the send within its deadline. Media type is detected by file extension.",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         items: z
           .array(
             z.object({
-              filePath: absolutePath.describe(
-                "Absolute local filesystem path to a photo or video file. URLs are rejected.",
-              ),
+              ...mediaSourceSchema,
               caption: safeText
                 .optional()
                 .describe("Per-item caption (shown under this item when the album is expanded)"),
@@ -304,7 +289,15 @@ export function registerSendMediaTools(server: McpServer, telegram: TelegramServ
       if (err) return fail(new Error(err));
 
       try {
-        const { ids } = await telegram.sendAlbum(chatId, items, { caption, parseMode, replyTo, topicId });
+        const resolved = [];
+        for (const item of items) {
+          resolved.push({
+            filePath: await resolveMediaSource(item),
+            caption: item.caption,
+            fileName: item.filePath ? item.fileName : undefined,
+          });
+        }
+        const { ids } = await telegram.sendAlbum(chatId, resolved, { caption, parseMode, replyTo, topicId });
         const idList = ids.map((id) => `#${id}`).join(", ");
         return ok(`Album sent to ${chatId} (${ids.length} items) [${idList}]`);
       } catch (e) {

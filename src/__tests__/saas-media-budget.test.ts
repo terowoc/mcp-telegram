@@ -55,3 +55,28 @@ test("media entry limits also bound zero-byte files", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("uploads reserve both payload and metadata entries atomically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "media-upload-budget-"));
+  const user = "11111111-1111-4111-8111-111111111111";
+  try {
+    await mkdir(join(root, user));
+    const budget = new SaasMediaBudget({
+      root,
+      maxFileBytes: 4,
+      maxUserBytes: 10,
+      maxUserFiles: 3,
+      availableBytes: () => 1e10,
+    });
+    const release = budget.reserve(user, { files: 2, bytes: 5 });
+    assert.throws(() => budget.reserve(user, { files: 2, bytes: 5 }), /quota/);
+    release();
+    const again = budget.reserve(user, { files: 2, bytes: 5 });
+    again();
+    again();
+    const normal = budget.reserve(user);
+    normal();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

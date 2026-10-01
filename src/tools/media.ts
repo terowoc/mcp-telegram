@@ -1,26 +1,106 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { MEDIA_CHUNK_BYTES, MEDIA_ID_PATTERN, mediaUploadStore } from "../media-upload.js";
+import { importMediaUrl } from "../media-url.js";
 import type { TelegramService } from "../telegram-client.js";
+import { mediaSourceSchema, resolveMediaSource } from "./media-source.js";
 import { fail, ok, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
 
 export function registerMediaTools(server: McpServer, telegram: TelegramService) {
   server.registerTool(
-    "telegram-send-file",
+    "telegram-upload-media",
     {
-      description: "Send a file (photo, document, video, etc.) to a Telegram chat",
+      description:
+        "Transfer an AI-created photo, video, document or audio file to this MCP server. Provide fileUrl for a direct public HTTPS download, or base64 data (at most 512 KiB of decoded bytes per call). " +
+        "For chunked uploads: first call includes fileName, data and final=false; continue with returned fileId, offset=receivedBytes and data; last call uses final=true. " +
+        "Only send a fileId when ready=true. Handles are private to this account and expire after one hour. Do not pass AI sandbox paths as filePath and do not invent file bytes.",
       inputSchema: {
-        chatId: z.string().describe("Chat ID or username"),
-        filePath: z.string().describe("Absolute path to file"),
-        caption: z.string().optional().describe("File caption"),
+        fileName: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Original basename with extension; required for the first byte chunk"),
+        data: z
+          .string()
+          .max(Math.ceil(MEDIA_CHUNK_BYTES / 3) * 4)
+          .optional()
+          .describe("Standard base64 encoding of actual file bytes; max 512 KiB decoded per call"),
+        fileUrl: mediaSourceSchema.fileUrl,
+        fileId: z
+          .string()
+          .regex(MEDIA_ID_PATTERN)
+          .optional()
+          .describe("Handle from the first chunk; omit when starting an upload"),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Byte offset for this chunk; use receivedBytes from the previous response, first chunk is zero"),
+        final: z
+          .boolean()
+          .default(true)
+          .describe("false while more chunks remain; true for a complete file or final chunk"),
+      },
+      outputSchema: {
+        fileId: z.string(),
+        fileName: z.string(),
+        receivedBytes: z.number(),
+        ready: z.boolean(),
+        expiresAt: z.number(),
       },
       annotations: WRITE,
     },
-    async ({ chatId, filePath, caption }) => {
+    async ({ fileName, data, fileUrl, fileId, offset, final }) => {
+      try {
+        if ((data !== undefined) === (fileUrl !== undefined))
+          throw new Error("Provide exactly one of base64 data or fileUrl");
+        if (fileUrl && (fileId !== undefined || offset !== undefined || !final))
+          throw new Error("URL uploads cannot include chunk fileId, offset or final=false");
+        const store = mediaUploadStore();
+        const result = fileUrl
+          ? await importMediaUrl(fileUrl, fileName, store)
+          : await store.upload({ fileName, data: data as string, fileId, offset, final });
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "telegram-send-file",
+    {
+      description:
+        "Send a photo, video, document or audio file to Telegram. Provide a completed fileId from telegram-upload-media, a downloadable HTTPS fileUrl, or a filePath that exists on the MCP server. mediaType=auto detects photos/videos from their extension; document preserves the attachment bytes.",
+      inputSchema: {
+        chatId: z.string().describe("Chat ID or username"),
+        ...mediaSourceSchema,
+        mediaType: z
+          .enum(["auto", "document"])
+          .optional()
+          .describe("auto detects photo/video/audio by filename; document sends the original file as an attachment"),
+        caption: z.string().optional().describe("File caption"),
+        replyTo: z.number().int().positive().optional().describe("Message ID to reply to"),
+        topicId: z.number().int().positive().optional().describe("Forum topic ID"),
+        parseMode: z.enum(["md", "html"]).optional().describe("Caption format"),
+      },
+      annotations: WRITE,
+    },
+    async ({ chatId, filePath, fileId, fileUrl, fileName, mediaType, caption, replyTo, topicId, parseMode }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        await telegram.sendFile(chatId, filePath, caption);
+        const path = await resolveMediaSource({ filePath, fileId, fileUrl, fileName });
+        await telegram.sendFile(chatId, path, caption, {
+          fileName: filePath ? fileName : undefined,
+          mediaType,
+          replyTo,
+          topicId,
+          parseMode,
+        });
         return ok(`File sent to ${chatId}`);
       } catch (e) {
         return fail(e);

@@ -70,6 +70,42 @@ function setup(
   return { store, users, vault, children, supervisor };
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+test("media uploads and URL sends hold all storage reservations until worker settlement", async () => {
+  let held = 0;
+  const s = setup({
+    mediaBudget: {
+      reserve: () => {
+        held++;
+        return () => {
+          held--;
+        };
+      },
+    },
+  });
+  try {
+    for (const [name, args, expected] of [
+      ["telegram-upload-media", { fileName: "video.mp4", data: "eA==" }, 1],
+      ["telegram-send-file", { chatId: "42", fileUrl: "https://public.test/a" }, 1],
+      [
+        "telegram-send-album",
+        { chatId: "42", items: [{ fileUrl: "https://public.test/a" }, { fileUrl: "https://public.test/b" }] },
+        2,
+      ],
+      ["telegram-send-file", { chatId: "42", fileId: "media_11111111-1111-4111-8111-111111111111" }, 0],
+    ] as const) {
+      const before = s.children[0]?.sent.length ?? 0;
+      const call = s.supervisor.call(s.users[0].id, name, args);
+      await waitFor(() => (s.children[0]?.sent.length ?? 0) > Math.max(before, 1));
+      assert.equal(held, expected, name);
+      s.children[0].reply();
+      await call;
+      assert.equal(held, 0);
+    }
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
 test("a login success without saved session stops that worker without throwing in the gateway", async () => {
   const s = setup();
   try {

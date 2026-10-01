@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
+import { mediaSourceSchema, resolveMediaSource } from "./media-source.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
 
 export function registerChatTools(server: McpServer, telegram: TelegramService) {
@@ -337,16 +338,23 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
         title: z.string().optional().describe("New group title"),
         description: z.string().optional().describe("New group description (supergroups only)"),
         photoPath: z.string().optional().describe("Absolute path to new group photo image file"),
+        fileId: mediaSourceSchema.fileId,
+        fileUrl: mediaSourceSchema.fileUrl,
+        fileName: mediaSourceSchema.fileName,
       },
       annotations: WRITE,
     },
-    async ({ chatId, title, description, photoPath }) => {
+    async ({ chatId, title, description, photoPath, fileId, fileUrl, fileName }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        await telegram.editGroup(chatId, { title, description, photoPath });
-        const changed = [title && "title", description != null && "description", photoPath && "photo"].filter(Boolean);
+        const hasMedia = photoPath !== undefined || fileId !== undefined || fileUrl !== undefined;
+        const path = hasMedia
+          ? await resolveMediaSource({ filePath: photoPath, fileId, fileUrl, fileName })
+          : undefined;
+        await telegram.editGroup(chatId, { title, description, photoPath: path });
+        const changed = [title && "title", description != null && "description", hasMedia && "photo"].filter(Boolean);
         return ok(`Updated ${changed.join(", ")} for ${chatId}`);
       } catch (e) {
         return fail(e);
