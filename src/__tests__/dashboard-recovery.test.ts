@@ -108,3 +108,59 @@ test("registration keeps one-time recovery codes even if Telegram attempt lookup
   await ui.submit("authForm", { login: "alice", password: "a sufficiently long fixture password" });
   assert.ok(ui.html().includes("one-time-recovery-fixture"));
 });
+
+test("a delayed client list from the previous account is discarded after switching accounts", async () => {
+  let statuses = 0;
+  let releaseStatus!: (value: Response) => void;
+  let releaseClients!: (value: Response) => void;
+  const ui = await dashboard((path) => {
+    if (path === "/me")
+      return ++statuses === 1
+        ? json(me("alice", true))
+        : new Promise<Response>((r) => {
+            releaseStatus = r;
+          });
+    if (path === "/clients")
+      return new Promise<Response>((r) => {
+        releaseClients = r;
+      });
+    throw new Error(`Unexpected request ${path}`);
+  });
+  await ui.focus();
+  await ui.navigate("clients");
+  releaseStatus(json(me("bob", true)));
+  await ui.settle();
+  releaseClients(json({ clients: [{ grantId: "alice-grant", clientId: "alice-private-client", version: 1 }] }));
+  await ui.settle();
+  assert.match(ui.html(), /bob/);
+  assert.equal(ui.html().includes("alice-private-client"), false);
+});
+
+test("a stale unauthorized focus response cannot discard a new account's recovery codes", async () => {
+  let current = "alice";
+  let releaseStatus!: (value: Response) => void;
+  let statuses = 0;
+  const ui = await dashboard((path) => {
+    if (path === "/me") {
+      if (++statuses === 2)
+        return new Promise<Response>((r) => {
+          releaseStatus = r;
+        });
+      return json(me(current, true));
+    }
+    if (path === "/logout") return new Response(null, { status: 204 });
+    if (path === "/register") {
+      current = "bob";
+      return json({ recoveryCodes: ["bob-new-recovery-code"] }, 201);
+    }
+    throw new Error(`Unexpected request ${path}`);
+  });
+  await ui.focus();
+  await ui.click("logout");
+  await ui.click("auth-register");
+  await ui.submit("authForm", { login: "bob", password: "a sufficiently long fixture password" });
+  assert.ok(ui.html().includes("bob-new-recovery-code"));
+  releaseStatus(json({ error: "authentication-required" }, 401));
+  await ui.settle();
+  assert.ok(ui.html().includes("bob-new-recovery-code"));
+});

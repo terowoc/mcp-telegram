@@ -10,10 +10,10 @@ User authorized the audit, all necessary fixes, and deployment. This is a set of
 
 ## Tasks
 
-- [ ] Telegram login admission: reproduce duplicate start and already-linked start; return the current attempt for retries and reject replacing a linked Telegram session. Preserve owner isolation and cancellation.
-- [ ] Cabinet recovery: resume the current attempt after account login; recover when `/me` fails after a successful QR; discard stale asynchronous replies and account-specific state when accounts switch. Add behavior tests using the real frontend module with browser boundary doubles.
-- [ ] MCP limits: reproduce two authenticated accounts sharing an IP competing for one quota. Apply 120/min independently per account and preserve the anonymous IP quota. Revalidate access after tool completion before returning data.
-- [ ] OAuth storage: periodically remove expired rows while idle, index expiry queries, and remove authentication-stale rows on read. Verify active registrations, tokens and other accounts survive.
+- [x] Telegram login admission: reproduce duplicate start and already-linked start; return the current attempt for retries and reject replacing a linked Telegram session. Preserve owner isolation and cancellation.
+- [x] Cabinet recovery: resume the current attempt after account login; recover when `/me` fails after a successful QR; discard stale asynchronous replies and account-specific state when accounts switch. Add behavior tests using the real frontend module with browser boundary doubles.
+- [x] MCP limits: reproduce two authenticated accounts sharing an IP competing for one quota. Apply 120/min independently per account and preserve the anonymous IP quota. Revalidate access after tool completion before returning data.
+- [x] OAuth storage: periodically remove expired rows while idle, index expiry queries, and remove authentication-stale rows on read. Verify active registrations, tokens and other accounts survive.
 - [ ] Run complete tests, backend/frontend builds and lint; independent code review; fix material findings.
 - [ ] Create and merge PR, deploy via Actions, verify production HTTP/OAuth/MCP and other VPS containers; archive worktree.
 
@@ -29,3 +29,7 @@ User authorized the audit, all necessary fixes, and deployment. This is a set of
 ## Baseline
 
 756 tests pass. npm audit reports zero vulnerabilities. Production was healthy before this audit. No account data is reset by this work.
+
+## Review corrections
+
+Independent review reproduced overlapping client-list/account-switch responses, stale focus 401 clearing new recovery codes, and retries during worker preparation spending QR quota. Added regression tests; account-scoped completions and errors are fenced by epoch, and connect requests wait in a bounded account queue with quota counted only after admission. Other account mutations keep fail-fast behavior.

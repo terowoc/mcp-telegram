@@ -324,3 +324,60 @@ test("authenticated cabinet polling does not exhaust the anonymous global quota"
     await s.close();
   }
 });
+
+test("connect retries during worker startup share admission and do not spend extra QR quota", async () => {
+  const s = await setup();
+  let releaseStartup!: () => void;
+  let preparing!: () => void;
+  const prepared = new Promise<void>((resolve) => {
+    preparing = resolve;
+  });
+  const startup = new Promise<void>((resolve) => {
+    releaseStartup = resolve;
+  });
+  s.supervisor.prepareLogin = async () => {
+    preparing();
+    await startup;
+  };
+  try {
+    const a = s.jar();
+    await a.register("alice");
+    const first = a.request("/telegram/login", "POST", {});
+    await prepared;
+    const retries = [a.request("/telegram/login", "POST", {}), a.request("/telegram/login", "POST", {})];
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseStartup();
+    const responses = await Promise.all([first, ...retries]);
+    const ids: string[] = [];
+    for (const response of responses) {
+      assert.equal(response.status, 202);
+      ids.push((await response.json()).id);
+    }
+    assert.equal(new Set(ids).size, 1);
+    assert.equal((await a.request(`/telegram/login/${ids[0]}`, "DELETE")).status, 204);
+    assert.equal((await a.request("/telegram/login", "POST", {})).status, 202);
+  } finally {
+    releaseStartup();
+    await s.close();
+  }
+});
+
+test("genuinely new QR attempts still enforce quota after three starts", async () => {
+  const s = await setup();
+  try {
+    const a = s.jar();
+    await a.register("alice");
+    for (let i = 0; i < 3; i++) {
+      const started = await a.request("/telegram/login", "POST", {});
+      assert.equal(started.status, 202);
+      const id = (await started.json()).id;
+      assert.equal((await a.request(`/telegram/login/${id}`, "DELETE")).status, 204);
+    }
+    const denied = await a.request("/telegram/login", "POST", {});
+    assert.equal(denied.status, 429);
+    assert.ok(denied.headers.get("retry-after"));
+    assert.equal((await a.request("/me")).status, 200);
+  } finally {
+    await s.close();
+  }
+});
