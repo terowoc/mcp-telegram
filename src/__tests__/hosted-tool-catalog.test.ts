@@ -8,6 +8,19 @@ import { applyToolProfile, ToolPolicy } from "../tool-policy.js";
 import { registerTools } from "../tools/index.js";
 
 const tools = (server: McpServer) => (server as unknown as McpServerInternal)._registeredTools;
+test("direct upload links are hosted-only and respect read-only and chat policies", async () => {
+  for (const [policy, enabled, expected] of [
+    [new ToolPolicy({ profile: "full" }), true, true],
+    [new ToolPolicy({ profile: "full", chatIds: ["42"] }), true, true],
+    [new ToolPolicy({ profile: "read" }), true, false],
+    [new ToolPolicy({ profile: "full" }), false, false],
+  ] as const) {
+    const server = new McpServer({ name: "direct-policy", version: "test" });
+    registerHostedTools(server, policy, enabled);
+    assert.equal(!!tools(server)["telegram-create-media-upload"], expected);
+    await server.close();
+  }
+});
 test("cached catalog preserves schemas, annotations and policy-specific visibility", async () => {
   for (const policy of [
     new ToolPolicy({ profile: "full" }),

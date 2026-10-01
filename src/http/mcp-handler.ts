@@ -2,10 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Request, Response } from "express";
 import { wireIpcProxies } from "../client.js";
+import { DIRECT_UPLOAD_TOOL, type DirectMediaUploads } from "./direct-media-upload.js";
 import type { GatewayIdentity } from "./identity.js";
 import { registerHostedTools } from "./tool-catalog.js";
 
-export function createMcpHandler(identity: GatewayIdentity, version: string) {
+export function createMcpHandler(identity: GatewayIdentity, version: string, uploads?: DirectMediaUploads) {
   return async (req: Request, res: Response) => {
     const { accountId, grantId } = res.locals.mcpIdentity as { accountId: string; grantId: string };
     if (Array.isArray(req.body)) {
@@ -22,13 +23,19 @@ export function createMcpHandler(identity: GatewayIdentity, version: string) {
     }
     const started = performance.now();
     const server = new McpServer({ name: "mcp-telegram", version: version });
-    registerHostedTools(server, identity.toolPolicy(accountId));
+    registerHostedTools(server, identity.toolPolicy(accountId), !!uploads);
     const catalogMs = performance.now() - started;
     wireIpcProxies(server, {
       call: async (name, args, callOptions) => {
         if (!identity.isActive(accountId) || !identity.isGrantValid(accountId, grantId))
           throw new Error("MCP access revoked");
-        const result = await identity.callTool(accountId, name, args, callOptions);
+        const result =
+          name === DIRECT_UPLOAD_TOOL && uploads
+            ? await uploads.create(accountId, grantId, args).then((ticket) => ({
+                content: [{ type: "text" as const, text: JSON.stringify(ticket) }],
+                structuredContent: ticket,
+              }))
+            : await identity.callTool(accountId, name, args, callOptions);
         if (!identity.isActive(accountId) || !identity.isGrantValid(accountId, grantId))
           throw new Error("MCP access revoked");
         if (Buffer.byteLength(JSON.stringify(result)) > 2 * 1048576 - 1024)

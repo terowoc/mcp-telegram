@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import express from "express";
+import { DirectMediaUploads } from "../http/direct-media-upload.js";
 import type { GatewayIdentity } from "../http/identity.js";
 import { createMcpHandler } from "../http/mcp-handler.js";
 import type { McpServerInternal } from "../ipc-protocol.js";
@@ -45,6 +47,8 @@ test("hosted HTTP catalog uploads a file larger than one request and delivers it
       executor.call(name, args, options),
   } as GatewayIdentity;
   const app = express();
+  const uploads = new DirectMediaUploads({ origin: "https://public.test", identity });
+  uploads.mount(app);
   app.use(express.json({ limit: "1mb" }));
   app.post(
     "/mcp",
@@ -52,7 +56,7 @@ test("hosted HTTP catalog uploads a file larger than one request and delivers it
       res.locals.mcpIdentity = { accountId: "account", grantId: "grant" };
       next();
     },
-    createMcpHandler(identity, "test"),
+    createMcpHandler(identity, "test", uploads),
   );
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -126,9 +130,41 @@ test("hosted HTTP catalog uploads a file larger than one request and delivers it
     assert.equal(sent[0].replyTo, 7);
     await request("tools/call", { name: "telegram-send-file", arguments: { chatId: "42", fileId, mediaType: "auto" } });
     assert.equal(sent[1].forceDocument, false);
+    const created = await request("tools/call", {
+      name: "telegram-create-media-upload",
+      arguments: {
+        fileName: "native-design.png",
+        sizeBytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      },
+    });
+    const ticket = created.structuredContent;
+    let directFileId: string | undefined;
+    for (let offset = 0; offset < bytes.length; offset += ticket.maxChunkBytes) {
+      const response = await fetch(
+        `http://127.0.0.1:${(server.address() as AddressInfo).port}${new URL(ticket.uploadUrl).pathname}`,
+        {
+          method: "PUT",
+          headers: { ...ticket.headers, "Upload-Offset": String(offset) },
+          body: bytes.subarray(offset, offset + ticket.maxChunkBytes),
+        },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+      const result = await response.json();
+      assert.equal(result.ready, offset + ticket.maxChunkBytes >= bytes.length);
+      directFileId = result.fileId;
+    }
+    await request("tools/call", {
+      name: "telegram-send-file",
+      arguments: { chatId: "42", fileId: directFileId, mediaType: "auto" },
+    });
+    assert.deepEqual(await readFile(sent[2].file as string), bytes);
+    assert.ok((sent[2].file as string).endsWith("/native-design.png"));
+    assert.equal(sent[2].forceDocument, false);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await registry.close();
+    uploads.close();
     if (previousRoot === undefined) delete process.env.MCP_TELEGRAM_FILE_ROOT;
     else process.env.MCP_TELEGRAM_FILE_ROOT = previousRoot;
     await rm(root, { recursive: true, force: true });

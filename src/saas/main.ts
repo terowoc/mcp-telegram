@@ -182,6 +182,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    gateway.stopUploads();
     clearInterval(mediaCleanup);
     const workers = supervisor.close(); // forbid admission before draining browser attempts
     closePromise = (async () => {
