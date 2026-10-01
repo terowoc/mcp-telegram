@@ -59,6 +59,11 @@ export async function dashboard(
       },
     },
     location,
+    history: {
+      replaceState: (_state: unknown, _title: string, url: string) => {
+        location.hash = url;
+      },
+    },
     navigator: {},
     localStorage: {},
     sessionStorage: {},
@@ -101,6 +106,7 @@ export async function dashboard(
   await settle();
   return {
     html: () => app.innerHTML,
+    currentHash: () => location.hash,
     input: (name: string, value: string) => {
       const element = forms.flatMap((form) => form.elements).find((field) => field.name === name);
       if (!element) throw new Error(`Missing field ${name}`);

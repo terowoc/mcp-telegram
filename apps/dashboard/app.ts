@@ -88,6 +88,7 @@ function field(label: string, name: string, type = "text", extra = ""): string {
 function render(): void {
   const context = `${epoch}:${cabinet?.user.id ?? "anonymous"}:${cabinet?.policy.version ?? 0}:${page}:${authMode}`;
   const scrollTop = context === renderedContext ? app.querySelector<HTMLElement>(".canvas")?.scrollTop : undefined;
+  const documentScrollTop = context === renderedContext ? document.scrollingElement?.scrollTop : 0;
   const forms = [...app.querySelectorAll<HTMLFormElement>("form")];
   const drafts =
     context === renderedContext
@@ -131,8 +132,6 @@ function render(): void {
       : [];
   renderView();
   renderedContext = context;
-  const canvas = app.querySelector<HTMLElement>(".canvas");
-  if (canvas && scrollTop !== undefined) canvas.scrollTop = scrollTop;
   [...app.querySelectorAll<HTMLDetailsElement>("details")].forEach((detail, index) => {
     if (details[index] !== undefined) detail.open = details[index];
   });
@@ -179,6 +178,10 @@ function render(): void {
     }
     for (const field of form.elements) (field as HTMLInputElement).disabled = isBusy;
   }
+  const canvas = app.querySelector<HTMLElement>(".canvas");
+  if (canvas && scrollTop !== undefined) canvas.scrollTop = scrollTop;
+  if (document.scrollingElement && documentScrollTop !== undefined)
+    document.scrollingElement.scrollTop = documentScrollTop;
 }
 function themeButton(): string {
   return button(
@@ -293,7 +296,7 @@ async function run(work: () => Promise<void>): Promise<void> {
     if (pendingPage && cabinet) {
       const next = pendingPage;
       pendingPage = undefined;
-      openPage(next, false);
+      openPage(next);
     } else render();
   }
 }
@@ -303,8 +306,7 @@ async function refresh(): Promise<void> {
   if (currentEpoch !== epoch) return;
   const switchedAccount = cabinet && cabinet.user.id !== value.user.id;
   if (switchedAccount) {
-    page = value.telegram.sessionPresent ? "mcp" : "telegram";
-    location.hash = page;
+    selectPage(value.telegram.sessionPresent ? "mcp" : "telegram");
     clearAttempt();
     clients = [];
     clientsState = "idle";
@@ -347,7 +349,7 @@ async function pollAttempt(id: string, currentEpoch: number): Promise<void> {
       await refresh();
       if (currentEpoch !== epoch || !cabinet || attempt?.id !== id) return;
       clearAttempt();
-      page = "mcp";
+      selectPage("mcp");
       message = "Telegram подключён. Теперь добавьте MCP в свой AI-клиент.";
       isError = false;
       render();
@@ -365,7 +367,7 @@ async function pollAttempt(id: string, currentEpoch: number): Promise<void> {
         await refresh();
         if (cabinet?.telegram.sessionPresent) {
           clearAttempt();
-          page = "mcp";
+          selectPage("mcp");
         }
       } catch (refreshError) {
         showError(refreshError);
@@ -398,6 +400,10 @@ function pageFromHash(): Page | undefined {
   const name = location.hash?.slice(1);
   return nav.find(([key]) => key === name)?.[0];
 }
+function selectPage(next: Page): void {
+  page = next;
+  history.replaceState(null, "", `#${next}`);
+}
 function openPage(next: Page, updateHash = true): void {
   page = next;
   message = "";
@@ -408,11 +414,12 @@ function openPage(next: Page, updateHash = true): void {
 }
 window.addEventListener("hashchange", () => {
   const next = pageFromHash();
-  if (!cabinet || !next || next === page) return;
+  if (!cabinet || !next) return;
   if (isBusy) {
-    pendingPage = next;
+    pendingPage = next === page ? undefined : next;
     return;
   }
+  if (next === page) return;
   openPage(next, false);
 });
 async function dispatchAction(action: string): Promise<void> {
@@ -427,7 +434,7 @@ async function dispatchAction(action: string): Promise<void> {
       try {
         await refresh();
         startupFailed = false;
-        page = pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram");
+        selectPage(pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram"));
         await resumeAttempt();
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
@@ -479,7 +486,7 @@ async function dispatchAction(action: string): Promise<void> {
   if (action === "saved-recovery") {
     recoveryCodes = [];
     message = "";
-    page = "telegram";
+    selectPage("telegram");
     if (!cabinet) authMode = "login";
     render();
     if (cabinet) await run(resumeAttempt);
@@ -529,7 +536,7 @@ async function dispatchAction(action: string): Promise<void> {
       }
       clearAttempt();
       await refresh();
-      if (cabinet?.telegram.sessionPresent) page = "mcp";
+      if (cabinet?.telegram.sessionPresent) selectPage("mcp");
     } else if (action === "disconnect") {
       await accountRequest("/telegram/disconnect", "POST", {});
       clearAttempt();
@@ -610,7 +617,7 @@ app.addEventListener("submit", (event) => {
       const authenticatedEpoch = epoch;
       try {
         await refresh();
-        page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
+        selectPage(cabinet!.telegram.sessionPresent ? "mcp" : "telegram");
         if (!recoveryCodes.length) await resumeAttempt();
       } catch (error) {
         if (authenticatedEpoch === epoch) showError(error);
@@ -673,7 +680,7 @@ async function start(): Promise<void> {
   }
   try {
     await refresh();
-    page = pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram");
+    selectPage(pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram"));
     await resumeAttempt();
   } catch (error) {
     if (!(error instanceof ApiError && error.status === 401)) {

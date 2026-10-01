@@ -72,6 +72,43 @@ test("a saved navigation URL restores the selected cabinet page", async () => {
   assert.match(ui.html(), /id="deleteForm"/);
 });
 
+test("returning to the displayed page during a request discards obsolete deferred navigation", async () => {
+  let finish!: (response: Response) => void;
+  const ui = await dashboard((path) =>
+    path === "/me"
+      ? json(cabinet)
+      : new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+  );
+  await ui.navigate("clients");
+  await ui.hash("#access");
+  await ui.hash("#clients");
+  finish(json({ clients: [] }));
+  await ui.settle();
+  assert.equal(ui.currentHash(), "#clients");
+  assert.match(ui.html(), /Пока нет подключений/);
+  assert.doesNotMatch(ui.html(), /id="policyForm"/);
+});
+
+test("login synchronizes the URL with the destination instead of keeping a prior section", async () => {
+  let authenticated = false;
+  const ui = await dashboard(
+    (path) => {
+      if (path === "/login") {
+        authenticated = true;
+        return json({});
+      }
+      return authenticated ? json(cabinet) : json({ error: "authentication-required" }, 401);
+    },
+    { hash: "#account" },
+  );
+  await ui.click("auth-login");
+  await ui.submit("authForm", { login: "alice", password: "sufficiently long password" });
+  assert.equal(ui.currentHash(), "#mcp");
+  assert.match(ui.html(), /Ваш адрес подключения/);
+});
+
 test("initial server outage offers retry rather than suggesting a new signup", async () => {
   let fail = true;
   const ui = await dashboard(() => (fail ? json({ error: "capacity" }, 503) : json(cabinet)));
