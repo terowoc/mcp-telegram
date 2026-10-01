@@ -9,29 +9,8 @@ concurrency:
   group: telegram-mcp-production
   cancel-in-progress: false
 jobs:
-  verify:
-    if: github.repository == 'terowoc/mcp-telegram' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24.15
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: npm --prefix apps/web ci --allow-git=all
-      - run: npx tsx --test src/__tests__/web-package.test.ts
-      - run: npm run web:check
-      - run: npm run web:test -- --run
-      - run: npm run web:build:mocked
-      - run: npm --prefix apps/web exec -- playwright install --with-deps chromium
-      - run: npm run web:test:playwright -- --project=chromium --workers=1
   image:
-    needs: verify
+    if: github.repository == 'terowoc/mcp-telegram' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

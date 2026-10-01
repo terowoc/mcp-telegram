@@ -24,7 +24,7 @@ This fork includes a pinned GPL Telegram Web A frontend with real browser chats 
 - [SaaS API and storage](docs/guides/saas.md)
 - [Scoped production deployment and coherent rollback](docs/guides/saas-deployment.md)
 
-The complete image runs `saas`. Existing stdio, daemon, login and single-owner HTTP CLI modes remain available. Frontend builds require explicit public browser-app credentials; private server credentials are never embedded. Public hosting is enabled only after those inputs and the operator's initial key provisioning are complete.
+The complete image runs `saas`. Existing stdio, daemon, login and single-owner HTTP CLI modes remain available. Frontend builds require explicit public browser-app inputs and never inherit server environment files. The owner can authorize the same application values for browser and server. GitHub Actions runs only image build and VPS deployment; health checks and automatic rollback remain enabled.
 
 ## Features
 
