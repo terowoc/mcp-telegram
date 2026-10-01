@@ -44,11 +44,12 @@ upstream. Сервер MCP получает отдельную Telegram-сесс
 При переключении аккаунта Web A прежний MCP доступ автоматически не
 переназначается новому аккаунту.
 
-Telegram API credentials frontend задаются отдельно от серверных secrets.
-Серверный env, API hash, пароли, OAuth signing keys и Telegram-сессии не
-попадают в frontend build. Для опубликованного клиента используются
-credentials зарегистрированного приложения, предназначенные для него;
-никакие тестовые upstream credentials в release не используются.
+Telegram API credentials frontend задаются явными публичными build inputs.
+Серверный env, пароли, OAuth signing keys и Telegram-сессии не попадают в
+frontend build. По явному решению владельца от 2026-10-01 браузер и сервер
+используют предоставленные им API ID и hash одного приложения; браузерный
+hash будет публичным. Сборка по-прежнему не наследует серверное окружение.
+Никакие тестовые upstream credentials в release не используются.
 
 ## Интерфейс
 
