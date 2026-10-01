@@ -19,6 +19,9 @@ export interface GatewayIdentity {
   describeAccess(accountId?: string): string;
   consentBinding?(accountId?: string): string;
   authenticationBinding?(accountId: string): string | undefined;
+  browserAuthentication?(
+    cookieHeader: string,
+  ): { accountId: string; authenticatedAt: number; binding: string } | undefined;
 }
 export function ownerIdentity(options: {
   ownerPasswordHash: string;

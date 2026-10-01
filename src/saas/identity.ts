@@ -2,6 +2,8 @@ import type { GatewayIdentity } from "../http/identity.js";
 import type { McpRegisteredTool } from "../ipc-protocol.js";
 import { ToolPolicy } from "../tool-policy.js";
 import { hashOpaqueToken, type SaasAuth } from "./auth.js";
+import { readCookie } from "./bootstrap-contexts.js";
+import { SAAS_COOKIE } from "./routes.js";
 import type { SaasStore } from "./store.js";
 import type { WorkerSupervisor } from "./supervisor.js";
 
@@ -30,6 +32,12 @@ export function createSaasIdentity(
   const valid = (id: string, grantId: string) => {
     const grant = store.findGrant(grantId);
     return !!active(id) && grant?.userId === id;
+  };
+  const binding = (id: string) => {
+    const user = active(id);
+    return user
+      ? `urn:tg-bridge:credential:${hashOpaqueToken(user.credentialVersion === 0 && user.passwordHash ? user.passwordHash : `${user.id}:${user.credentialVersion}`)}`
+      : undefined;
   };
   return {
     kind: "saas",
@@ -74,10 +82,12 @@ export function createSaasIdentity(
       const user = id ? active(id) : undefined;
       return user ? `${user.id}:${user.policy.version}` : "inactive";
     },
-    authenticationBinding: (id) => {
-      const user = active(id);
-      return user
-        ? `urn:tg-bridge:credential:${hashOpaqueToken(user.credentialVersion === 0 && user.passwordHash ? user.passwordHash : `${user.id}:${user.credentialVersion}`)}`
+    authenticationBinding: binding,
+    browserAuthentication: (cookieHeader) => {
+      const session = auth.authenticate(readCookie(cookieHeader, SAAS_COOKIE));
+      const current = session ? binding(session.userId) : undefined;
+      return session && current
+        ? { accountId: session.userId, authenticatedAt: session.authenticatedAt, binding: current }
         : undefined;
     },
     describeAccess: (id) => {

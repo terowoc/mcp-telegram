@@ -3,8 +3,9 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import express from "express";
-import { SaasAuth } from "../saas/auth.js";
+import { hashOpaqueToken, SaasAuth } from "../saas/auth.js";
 import { BootstrapContexts } from "../saas/bootstrap-contexts.js";
+import { OAuthContinuations } from "../saas/oauth-continuations.js";
 import { createSaasRoutes } from "../saas/routes.js";
 import { SessionVault } from "../saas/session-vault.js";
 import { createSaasStore } from "../saas/store.js";
@@ -18,6 +19,7 @@ async function setup() {
   const store = createSaasStore(":memory:"),
     auth = new SaasAuth(store, { csrfKey: randomBytes(32) }),
     vault = new SessionVault(randomBytes(32));
+  const continuations = new OAuthContinuations();
   const contexts = new BootstrapContexts({ csrfKey: randomBytes(32) });
   let full = false,
     started = 0;
@@ -43,6 +45,7 @@ async function setup() {
     vault,
     attempts,
     contexts,
+    continuations,
     publicUrl: origin,
     revokeGrants: async () => {},
   });
@@ -99,8 +102,8 @@ async function setup() {
         csrf = body.csrfToken;
         return res;
       },
-      start: async () => {
-        const res = await request("/telegram-auth/start", "POST", {});
+      start: async (continuation?: string) => {
+        const res = await request("/telegram-auth/start", "POST", { continuation });
         return { res, body: await res.json() };
       },
       legacy: async (login: string, password: string) => {
@@ -117,6 +120,7 @@ async function setup() {
     auth,
     vault,
     attempts,
+    continuations,
     jar,
     started: () => started,
     setFull: () => {
@@ -131,6 +135,7 @@ async function setup() {
       await router.close();
       await saas.close();
       contexts.close();
+      continuations.close();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
       store.close();
@@ -138,6 +143,35 @@ async function setup() {
   };
 }
 
+test("continuation redirects only owner to a registered interaction", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar(),
+      context = await jar.context();
+    const token = context.headers.getSetCookie()[0].split(";", 1)[0].split("=")[1];
+    const handle = f.continuations.create({
+      interactionUid: "validated_uid",
+      clientId: "client",
+      contextHash: hashOpaqueToken(token),
+      expiresAt: Date.now() + 10000,
+      requireFreshAuthentication: false,
+    });
+    const other = f.jar("192.0.2.2");
+    await other.context();
+    assert.equal((await other.start(handle)).res.status, 409);
+    const { res, body } = await jar.start(handle);
+    assert.equal(res.status, 201);
+    f.verify(body.id);
+    const complete = await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+      returnTo: "https://evil.example",
+    });
+    assert.equal(complete.status, 200);
+    assert.equal((await complete.json()).continueTo, "/interaction/validated_uid");
+    assert.equal(f.continuations.consume(handle, hashOpaqueToken(token)), undefined);
+  } finally {
+    await f.close();
+  }
+});
 test("initial_context_does_not_spawn and wrong origin cannot start", async () => {
   const f = await setup();
   try {

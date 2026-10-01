@@ -7,6 +7,7 @@ import { createHttpGateway } from "../http/gateway.js";
 import { SaasAuth } from "./auth.js";
 import { BootstrapContexts } from "./bootstrap-contexts.js";
 import { createSaasIdentity } from "./identity.js";
+import { OAuthContinuations } from "./oauth-continuations.js";
 import { createSaasRoutes } from "./routes.js";
 import { loadVaultKey, SessionVault } from "./session-vault.js";
 import { mountSaasFrontend } from "./static.js";
@@ -109,6 +110,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   const contexts = new BootstrapContexts({
     csrfKey: createHmac("sha256", key).update("tg-bridge/bootstrap/csrf/v1").digest(),
   });
+  const continuations = new OAuthContinuations();
   const loginAttempts = new TelegramAuthAttempts({
     auth,
     store,
@@ -122,6 +124,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
       storageDir: join(config.authDir, "oauth"),
       version: config.version,
       identity: createSaasIdentity(store, auth, supervisor),
+      unifiedLogin: { contexts, continuations },
       isHealthy: () => !closing,
       trustProxy: 1,
       allowedOrigins: config.allowedOrigins,
@@ -145,6 +148,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     vault,
     attempts: loginAttempts,
     contexts,
+    continuations,
     publicUrl: config.publicUrl,
     revokeGrants: gateway.revokeGrants,
   });
@@ -170,6 +174,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
       try {
         await telegramAuthRoutes.close();
         contexts.close();
+        continuations.close();
         await routes.close();
       } finally {
         await workers;

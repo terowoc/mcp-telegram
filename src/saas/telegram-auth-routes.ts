@@ -3,6 +3,7 @@ import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import type { SaasAuth } from "./auth.js";
 import type { BootstrapContexts } from "./bootstrap-contexts.js";
+import type { OAuthContinuations } from "./oauth-continuations.js";
 import { SAAS_COOKIE, type SaasRouter, saasCookie } from "./routes.js";
 import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
@@ -36,12 +37,14 @@ export function createTelegramAuthRoutes(options: {
   vault: SessionVault;
   attempts: TelegramAuthAttempts;
   contexts: BootstrapContexts;
+  continuations?: OAuthContinuations;
   publicUrl: string;
   revokeGrants: (ids: string[]) => Promise<void>;
 }): SaasRouter {
   const { auth, store, attempts, contexts } = options;
   const origin = new URL(options.publicUrl).origin;
   const router = express.Router() as SaasRouter;
+  const continuations = new Map<string, { handle: string; expiresAt: number }>();
   router.close = () => attempts.close();
   const byIp = rateLimit({
     windowMs: 900000,
@@ -97,7 +100,29 @@ export function createTelegramAuthRoutes(options: {
     byIp,
     aggregate,
     async (req, res) => {
+      const parsed = z
+        .object({
+          continuation: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{43}$/)
+            .optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid-request" });
+        return;
+      }
+      const continuation = parsed.data.continuation
+        ? options.continuations?.find(parsed.data.continuation, res.locals.bootstrap.contextHash)
+        : undefined;
+      if (parsed.data.continuation && !continuation) {
+        res.status(409).json({ error: "continuation-expired" });
+        return;
+      }
+      for (const [id, entry] of continuations) if (entry.expiresAt <= Date.now()) continuations.delete(id);
       const view = await attempts.start(res.locals.bootstrap.contextHash);
+      if (continuation && parsed.data.continuation)
+        continuations.set(view.id, { handle: parsed.data.continuation, expiresAt: continuation.expiresAt });
       contexts.extend(req, res);
       res.status(201).json(view);
     },
@@ -116,6 +141,22 @@ export function createTelegramAuthRoutes(options: {
     if (!view) res.status(404).json({ error: "attempt-not-found" });
     return view;
   };
+  router.post("/resume", (req, res) => {
+    const body = z.object({ continuation: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).safeParse(req.body);
+    if (!auth.authenticate(saasCookie(req))) {
+      res.status(401).json({ error: "authentication-required" });
+      return;
+    }
+    const continuation = body.success
+      ? options.continuations?.consume(body.data.continuation, res.locals.bootstrap.contextHash)
+      : undefined;
+    if (!continuation) {
+      res.status(409).json({ error: "continuation-expired" });
+      return;
+    }
+    contexts.clear(req, res);
+    res.json({ continueTo: `/interaction/${continuation.interactionUid}` });
+  });
   router.get("/:id", reads, (req, res) => {
     const view = owned(req, res);
     if (view) res.json(view);
@@ -153,17 +194,32 @@ export function createTelegramAuthRoutes(options: {
       legacyUserId = cabinet.userId;
     }
     const ids = legacyUserId ? store.listGrants(legacyUserId).map((grant) => grant.grantId) : [];
+    const continuationHandle = continuations.get(String(req.params.id))?.handle;
+    if (continuationHandle && !options.continuations?.find(continuationHandle, res.locals.bootstrap.contextHash)) {
+      await attempts.cancel(res.locals.bootstrap.contextHash, String(req.params.id));
+      continuations.delete(String(req.params.id));
+      res.status(409).json({ error: "continuation-expired" });
+      return;
+    }
     const signed = await attempts.complete(res.locals.bootstrap.contextHash, String(req.params.id), {
       legacyUserId,
       authorize: legacyUserId ? () => auth.authenticate(saasCookie(req))?.userId === legacyUserId : undefined,
     });
     if (ids.length) await options.revokeGrants(ids).catch(() => {});
+    const continuation = continuationHandle
+      ? options.continuations?.consume(continuationHandle, res.locals.bootstrap.contextHash)
+      : undefined;
+    continuations.delete(String(req.params.id));
     contexts.clear(req, res);
-    res.json(setSaasSession(res, store, signed));
+    res.json({
+      ...setSaasSession(res, store, signed),
+      ...(continuation ? { continueTo: `/interaction/${continuation.interactionUid}` } : {}),
+    });
   });
   router.delete("/:id", async (req, res) => {
     if (!owned(req, res)) return;
     await attempts.cancel(res.locals.bootstrap.contextHash, String(req.params.id));
+    continuations.delete(String(req.params.id));
     res.sendStatus(204);
   });
   const errors: ErrorRequestHandler = (error, _req, res, _next) => {
