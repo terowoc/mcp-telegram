@@ -157,13 +157,15 @@ async function refresh(): Promise<void> {
   const currentEpoch = epoch;
   const value = await request<Cabinet>("/me");
   if (currentEpoch !== epoch) return;
-  if (cabinet && cabinet.user.id !== value.user.id) {
+  const switchedAccount = cabinet && cabinet.user.id !== value.user.id;
+  if (switchedAccount) {
     clearAttempt();
     clients = [];
     recoveryCodes = [];
     epoch++;
   }
   cabinet = value;
+  if (switchedAccount) render();
 }
 async function resumeAttempt(): Promise<void> {
   if (!cabinet || cabinet.telegram.sessionPresent || attempt) return;
@@ -381,9 +383,14 @@ app.addEventListener("submit", (event) => {
       epoch++;
       clearAttempt();
       clients = [];
-      await refresh();
-      page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
-      if (!recoveryCodes.length) await resumeAttempt();
+      const authenticatedEpoch = epoch;
+      try {
+        await refresh();
+        page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
+        if (!recoveryCodes.length) await resumeAttempt();
+      } catch (error) {
+        if (authenticatedEpoch === epoch) showError(error);
+      }
     } else if (form.id === "telegramPasswordForm" && cabinet && attempt) {
       await accountRequest(`/telegram/login/${attempt.id}/password`, "POST", { password });
       attempt = { ...attempt, state: "connecting", dataUrl: undefined };

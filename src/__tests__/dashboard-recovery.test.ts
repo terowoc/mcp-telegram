@@ -164,3 +164,33 @@ test("a stale unauthorized focus response cannot discard a new account's recover
   await ui.settle();
   assert.ok(ui.html().includes("bob-new-recovery-code"));
 });
+
+test("a current login reports a failed cabinet refresh after successful authentication", async () => {
+  let loggedIn = false;
+  const ui = await dashboard((path) => {
+    if (path === "/login") {
+      loggedIn = true;
+      return json({});
+    }
+    if (path === "/me")
+      return loggedIn ? json({ error: "capacity" }, 503) : json({ error: "authentication-required" }, 401);
+    throw new Error(`Unexpected request ${path}`);
+  });
+  await ui.click("auth-login");
+  await ui.submit("authForm", { login: "alice", password: "a sufficiently long fixture password" });
+  assert.ok(ui.html().includes('role="alert"'));
+  assert.ok(ui.html().includes("Сервер занят"));
+});
+
+test("QR status renders the new cabinet immediately when the browser account changes", async () => {
+  let statuses = 0;
+  const ui = await dashboard((path) => {
+    if (path === "/me") return json(me(++statuses === 1 ? "alice" : "bob", statuses > 1));
+    if (path === "/telegram/login") return json({ attempt: qr });
+    if (path === `/telegram/login/${qr.id}`) return json({ ...qr, state: "success", dataUrl: undefined });
+    throw new Error(`Unexpected request ${path}`);
+  });
+  await ui.poll();
+  assert.ok(ui.html().includes("bob"));
+  assert.equal(ui.html().includes("data:image/png;base64,fixture"), false);
+});
