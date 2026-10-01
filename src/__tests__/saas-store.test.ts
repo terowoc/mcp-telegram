@@ -17,7 +17,7 @@ test("registration capacity is atomic across connections and survives reopening"
     assert.throws(() => b.register("user_100", "test-hash", []), /capacity/i);
     const user = a.findByLogin("user_0");
     assert.ok(user);
-    assert.deepEqual(user.policy, { profile: "read", chatIds: [], version: 1 });
+    assert.deepEqual(user.policy, { profile: "full", chatIds: [], version: 1 });
     assert.equal(b.findUser(user.id)?.login, "user_0");
     const reopened = createSaasStore(path);
     try {
@@ -128,6 +128,36 @@ test("identity metadata migrates a v1 database and survives reopening with its e
     try {
       assert.deepEqual(reopened.getTelegramAccount(user.id), { id: "123", username: "alice" });
       assert.equal(reopened.getEncryptedSession(user.id), "unchanged-envelope");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// New defaults must not widen saved restrictions or invalidate existing client grants.
+test("full signup default preserves existing read restrictions and grants after reopening", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "saas-default-policy-"));
+  const path = join(dir, "users.sqlite");
+  try {
+    const initial = createSaasStore(path);
+    const existing = initial.register("existing", "hash", []);
+    initial.updatePolicy(existing.id, { profile: "read", chatIds: ["-100123"], version: 1 });
+    initial.bindGrant(existing.id, "existing-grant", "existing-client", 2);
+    initial.putEncryptedSession(existing.id, "unchanged-envelope");
+    const saved = initial.findUser(existing.id);
+    assert.ok(saved);
+    const policy = saved.policy;
+    const grant = initial.findGrant("existing-grant");
+    initial.close();
+    const reopened = createSaasStore(path);
+    try {
+      const newcomer = reopened.register("newcomer", "hash", []);
+      assert.deepEqual(newcomer.policy, { profile: "full", chatIds: [], version: 1 });
+      assert.deepEqual(reopened.findUser(existing.id)?.policy, policy);
+      assert.deepEqual(reopened.findGrant("existing-grant"), grant);
+      assert.equal(reopened.getEncryptedSession(existing.id), "unchanged-envelope");
     } finally {
       reopened.close();
     }

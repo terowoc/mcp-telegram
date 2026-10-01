@@ -375,6 +375,8 @@ test("expired_or_foreign_interaction_is_rejected and continuation cannot redirec
 test("tokens route to their owner; read list and call agree and onboarding is browser only", async () => {
   const s = await setup();
   try {
+    for (const user of [s.alice, s.bob])
+      s.store.updatePolicy(user.userId, { profile: "read", chatIds: [], version: 1 });
     s.store.putEncryptedSession(s.alice.userId, "encrypted-A");
     s.store.putEncryptedSession(s.bob.userId, "encrypted-B");
     const a = await s.authorize("alice"),
@@ -405,6 +407,27 @@ test("tokens route to their owner; read list and call agree and onboarding is br
       s.calls.map((call) => call.userId),
       [s.alice.userId, s.bob.userId],
     );
+  } finally {
+    await s.close();
+  }
+});
+test("new accounts expose full Telegram tools after connection and OAuth approval", async () => {
+  const s = await setup();
+  try {
+    assert.deepEqual(s.store.findUser(s.alice.userId)?.policy, { profile: "full", chatIds: [], version: 1 });
+    s.store.putEncryptedSession(s.alice.userId, "encrypted-fixture");
+    const issued = await s.authorize("alice");
+    const listed = await (await s.rpc(issued.tokens, "tools/list")).json();
+    const names = listed.result.tools.map((tool: { name: string }) => tool.name);
+    assert.ok(names.includes("telegram-read-messages"));
+    assert.ok(names.includes("telegram-send-message"));
+    const called = await s.rpc(issued.tokens, "tools/call", {
+      name: "telegram-send-message",
+      arguments: { chatId: "123", text: "synthetic supervisor only" },
+    });
+    assert.equal(called.status, 200);
+    assert.equal((await called.json()).result.isError, undefined);
+    assert.deepEqual(s.calls, [{ userId: s.alice.userId, name: "telegram-send-message" }]);
   } finally {
     await s.close();
   }
