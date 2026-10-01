@@ -11,6 +11,7 @@ import { loadVaultKey, SessionVault } from "./session-vault.js";
 import { mountSaasFrontend } from "./static.js";
 import { createSaasStore } from "./store.js";
 import { WorkerSupervisor } from "./supervisor.js";
+import { WorkerBudget } from "./worker-budget.js";
 
 export interface SaasConfig {
   publicUrl: string;
@@ -90,6 +91,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   const store = createSaasStore(join(config.authDir, "saas.sqlite"), { maxUsers: config.maxUsers });
   const auth = new SaasAuth(store, { csrfKey: createHmac("sha256", key).update("tg-bridge/saas/csrf/v1").digest() });
   const supervisor = new WorkerSupervisor({
+    budget: new WorkerBudget(config.maxWorkers ?? 4),
     store,
     vault,
     apiId: config.apiId,

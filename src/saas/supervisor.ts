@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { SaasMediaBudget } from "./media-budget.js";
 import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
+import { CapacityError, WorkerBudget } from "./worker-budget.js";
+
+export { CapacityError } from "./worker-budget.js";
+
 import {
   type ChildMessage,
   childMessageSchema,
@@ -14,12 +18,6 @@ import {
   parseFrame,
 } from "./worker-protocol.js";
 
-export class CapacityError extends Error {
-  readonly retryAfter = 30;
-  constructor() {
-    super("Telegram worker capacity reached");
-  }
-}
 interface Options {
   store: SaasStore;
   vault: SessionVault;
@@ -30,6 +28,7 @@ interface Options {
   idleMs?: number;
   spawn?: typeof fork;
   mediaBudget?: Pick<SaasMediaBudget, "reserve">;
+  budget?: WorkerBudget;
 }
 interface Pending {
   resolve: (value: unknown) => void;
@@ -42,6 +41,7 @@ interface Pending {
   releaseMedia?: () => void;
 }
 interface Slot {
+  lease: { release(): void };
   userId: string;
   policyVersion: number;
   generation: string;
@@ -64,8 +64,10 @@ export class WorkerSupervisor {
   private closing = false;
   private readonly maxWorkers: number;
   private readonly mediaBudget: Pick<SaasMediaBudget, "reserve">;
+  private readonly budget: WorkerBudget;
   constructor(private options: Options) {
     this.maxWorkers = options.maxWorkers ?? 4;
+    this.budget = options.budget ?? new WorkerBudget(this.maxWorkers);
     this.mediaBudget = options.mediaBudget ?? new SaasMediaBudget({ root: options.filesRoot });
     if (!Number.isSafeInteger(this.maxWorkers) || this.maxWorkers < 1 || this.maxWorkers > 32)
       throw new Error("Invalid worker capacity");
@@ -107,6 +109,7 @@ export class WorkerSupervisor {
       resolveStopped = resolve;
     });
     const slot: Slot = {
+      lease: this.budget.reserve(`user:${userId}`),
       userId,
       policyVersion: user.policy.version,
       generation: randomUUID(),
@@ -356,6 +359,7 @@ export class WorkerSupervisor {
     await this.stopSlot(slot);
   }
   private finalize(slot: Slot) {
+    slot.lease.release();
     clearTimeout(slot.startup);
     clearTimeout(slot.idle);
     clearTimeout(slot.kill);
