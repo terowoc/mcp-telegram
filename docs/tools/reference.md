@@ -1,6 +1,6 @@
 # Tools Reference
 
-Telegram MCP Server provides 185 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
+Telegram MCP Server provides 186 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
 
 ## Auth
 
@@ -130,6 +130,7 @@ Telegram MCP Server provides 185 tools organized by category. All tools are auto
 
 | Tool | Description |
 | ------ | ------------- |
+| `telegram-upload-media` | Transfer actual file bytes (base64 chunks) or a public HTTPS URL; returns a private `fileId` for sending |
 | `telegram-send-file` | Send a file, photo, or document |
 | `telegram-download-media` | Download media from a message |
 | `telegram-get-profile-photo` | Get a user's or chat's profile photo |
@@ -148,6 +149,10 @@ Telegram MCP Server provides 185 tools organized by category. All tools are auto
 | `telegram-send-album` | Send 2–10 grouped photos/videos as a single album message |
 
 All `filePath` arguments must be absolute local filesystem paths. URLs, UNC shares, path-traversal (`..`), and POSIX pseudo-filesystems (`/proc`, `/sys`, `/dev`, `/run`) are rejected.
+
+For remote AI clients, media sending, stories and avatars also accept a completed `fileId` from `telegram-upload-media` or a direct public HTTPS `fileUrl`. A sandbox path such as `/mnt/data/photo.png` belongs to the AI environment and is not a server path. Upload actual bytes or supply a downloadable URL first.
+
+Uploads preserve the original filename and extension. Each base64 chunk is at most 512 KiB of decoded bytes; the default complete-file limit is 20 MiB. Start with `fileName`, `data`, `final:false`; continue with `fileId`, `offset:receivedBytes`, `data`; use `final:true` for the last chunk. Wait for `ready:true` before sending. Handles expire after one hour. `telegram-send-file` accepts `mediaType:"document"` to preserve original bytes as an attachment; omit it for automatic photo/video detection.
 
 ## Groups
 

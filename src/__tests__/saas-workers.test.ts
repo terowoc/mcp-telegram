@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import type { ChildProcess, fork } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { SaasMediaBudget } from "../saas/media-budget.js";
 import { SessionVault } from "../saas/session-vault.js";
 import { createSaasStore } from "../saas/store.js";
 import { WorkerSupervisor } from "../saas/supervisor.js";
@@ -70,6 +74,87 @@ function setup(
   return { store, users, vault, children, supervisor };
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+test("media uploads and URL sends hold all storage reservations until worker settlement", async () => {
+  let held = 0;
+  const s = setup({
+    mediaBudget: {
+      reserve: () => {
+        held++;
+        return () => {
+          held--;
+        };
+      },
+    },
+  });
+  try {
+    for (const [name, args, expected] of [
+      ["telegram-upload-media", { fileName: "video.mp4", data: "eA==" }, 1],
+      ["telegram-send-file", { chatId: "42", fileUrl: "https://public.test/a" }, 1],
+      [
+        "telegram-send-file",
+        { chatId: "me", file: { download_url: "https://public.test/a", file_id: "file-native" } },
+        1,
+      ],
+      [
+        "telegram-send-album",
+        { chatId: "42", items: [{ fileUrl: "https://public.test/a" }, { fileUrl: "https://public.test/b" }] },
+        1,
+      ],
+      ["telegram-send-file", { chatId: "42", fileId: "media_11111111-1111-4111-8111-111111111111" }, 0],
+      [
+        "telegram-send-album",
+        {
+          chatId: "me",
+          files: [
+            { download_url: "https://public.test/a", file_id: "file-a" },
+            { download_url: "https://public.test/b", file_id: "file-b" },
+          ],
+        },
+        1,
+      ],
+    ] as const) {
+      const before = s.children[0]?.sent.length ?? 0;
+      const call = s.supervisor.call(s.users[0].id, name, args);
+      await waitFor(() => (s.children[0]?.sent.length ?? 0) > Math.max(before, 1));
+      assert.equal(held, expected, name);
+      s.children[0].reply();
+      await call;
+      assert.equal(held, 0);
+    }
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+test("five and ten native album files fit the default account admission quota", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tg-album-quota-"));
+  const s = setup({ mediaBudget: new SaasMediaBudget({ root, availableBytes: () => 1e10 }) });
+  try {
+    for (const count of [5, 10]) {
+      const before = s.children[0]?.sent.length ?? 0;
+      let error: unknown;
+      const call = s.supervisor
+        .call(s.users[0].id, "telegram-send-album", {
+          chatId: "me",
+          files: Array.from({ length: count }, (_, i) => ({
+            download_url: `https://public.test/${i}`,
+            file_id: `file-${i}`,
+          })),
+        })
+        .catch((value) => {
+          error = value;
+        });
+      await waitFor(() => error !== undefined || (s.children[0]?.sent.length ?? 0) > Math.max(before, 1));
+      assert.equal(error, undefined);
+      s.children[0].reply();
+      await call;
+    }
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("a login success without saved session stops that worker without throwing in the gateway", async () => {
   const s = setup();
   try {

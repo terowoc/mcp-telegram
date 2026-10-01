@@ -1021,7 +1021,18 @@ export class TelegramService {
    * attachment into a re-compressed photo — extension-less paths already went
    * out as documents, and this keeps that contract.
    */
-  async sendFile(chatId: string, filePath: string, caption?: string, opts: { fileName?: string } = {}): Promise<void> {
+  async sendFile(
+    chatId: string,
+    filePath: string,
+    caption?: string,
+    opts: {
+      fileName?: string;
+      mediaType?: "auto" | "document";
+      replyTo?: number;
+      topicId?: number;
+      parseMode?: "md" | "html";
+    } = {},
+  ): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     filePath = await mediaPolicy().upload(filePath);
     const fileName = opts.fileName;
@@ -1034,11 +1045,19 @@ export class TelegramService {
           await this.client?.sendFile(resolved, {
             file: new CustomFile(fileName, size, filePath),
             caption,
-            forceDocument: true,
+            forceDocument: opts.mediaType !== "auto",
+            parseMode: opts.parseMode,
+            ...topicReplyOptions(opts.replyTo, opts.topicId),
           });
           return;
         }
-        await this.client?.sendFile(resolved, { file: filePath, caption });
+        await this.client?.sendFile(resolved, {
+          file: filePath,
+          caption,
+          ...(opts.mediaType ? { forceDocument: opts.mediaType === "document" } : {}),
+          parseMode: opts.parseMode,
+          ...topicReplyOptions(opts.replyTo, opts.topicId),
+        });
       },
       `sendFile to ${chatId}`,
       { retrySafe: false },

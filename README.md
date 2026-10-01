@@ -381,7 +381,7 @@ All tools are auto-discoverable via MCP — your AI client will see the full lis
 | **Audio Transcription (v1.31.0)** | `telegram-transcribe-audio` (Premium), `telegram-get-transcription`, `telegram-rate-transcription` |
 | **Fact-check (v1.31.0)** | `telegram-get-fact-check`, `telegram-edit-fact-check`, `telegram-delete-fact-check` |
 | **Stickers** | `telegram-send-sticker`, `telegram-get-installed-stickers`, `telegram-get-recent-stickers`, `telegram-get-sticker-set`, `telegram-search-sticker-sets` |
-| **Media** | `telegram-send-file`, `telegram-download-media`, `telegram-get-profile-photo`, `telegram-get-web-preview` |
+| **Media** | `telegram-upload-media`, `telegram-send-file`, `telegram-download-media`, `telegram-get-profile-photo`, `telegram-get-web-preview` |
 | **Rich Media Sending** | `telegram-send-voice`, `telegram-send-video-note` (round video), `telegram-send-location` (static or live), `telegram-send-venue`, `telegram-send-contact`, `telegram-send-dice` (🎲🎯🎰🏀⚽🎳), `telegram-send-album` (2–10 grouped photos/videos) |
 | **Groups** | `telegram-create-group`, `telegram-edit-group`, `telegram-invite-to-group`, `telegram-join-chat`, `telegram-leave-group`, `telegram-kick-user`, `telegram-ban-user`, `telegram-unban-user`, `telegram-set-admin`, `telegram-remove-admin`, `telegram-get-my-role`, `telegram-set-chat-permissions`, `telegram-set-slow-mode`, `telegram-get-admin-log` |
 | **Chat Info** | `telegram-get-chat-info`, `telegram-get-chat-members`, `telegram-get-chat-folders` |

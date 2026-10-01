@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GlobalLock } from "../global-lock.js";
+import { MEDIA_CHUNK_BYTES } from "../media-upload.js";
 import { SaasMediaBudget } from "./media-budget.js";
 import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
@@ -370,7 +371,7 @@ export class WorkerSupervisor {
       attemptId?: string;
       onEvent?: (event: LoginEvent) => void;
       timeoutMs?: number;
-      reserveMedia?: boolean;
+      mediaWrites?: Array<{ bytes?: number; files?: number }>;
       queue?: boolean;
       tool?: string;
     } = {},
@@ -422,7 +423,16 @@ export class WorkerSupervisor {
       if (!user || user.disabled || user.policy.version !== slot.policyVersion)
         throw new Error("Telegram worker policy changed");
       if (Date.now() >= deadlineAt) throw new Error("Telegram worker deadline exceeded");
-      const releaseMedia = options.reserveMedia ? this.mediaBudget.reserve(userId) : undefined;
+      const mediaReleases: Array<() => void> = [];
+      try {
+        for (const write of options.mediaWrites ?? []) mediaReleases.push(this.mediaBudget.reserve(userId, write));
+      } catch (error) {
+        for (const release of mediaReleases) release();
+        throw error;
+      }
+      const releaseMedia = () => {
+        for (const release of mediaReleases) release();
+      };
       const current = slot;
       const id = randomUUID();
       executionStarted = performance.now();
@@ -502,9 +512,34 @@ export class WorkerSupervisor {
   }
 
   call(userId: string, name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}) {
+    const mediaWrites: Array<{ bytes?: number; files?: number }> = [];
+    const remote = { bytes: 20 * 1048576 + 1024, files: 3 }; // payload, metadata and atomic metadata replacement
+    if (name === "telegram-download-media") mediaWrites.push({});
+    if (name === "telegram-upload-media")
+      mediaWrites.push(args.fileId ? { bytes: MEDIA_CHUNK_BYTES + 1024, files: 1 } : remote);
+    const sourceTools = new Set([
+      "telegram-send-file",
+      "telegram-send-voice",
+      "telegram-send-video-note",
+      "telegram-set-profile-photo",
+      "telegram-send-story",
+      "telegram-edit-story",
+      "telegram-edit-group",
+    ]);
+    if (sourceTools.has(name) && (typeof args.fileUrl === "string" || args.file !== undefined))
+      mediaWrites.push(remote);
+    let albumDownloads = 0;
+    if (name === "telegram-send-album" && Array.isArray(args.items)) {
+      for (const item of args.items.slice(0, 10))
+        if (item && typeof item === "object" && (typeof item.fileUrl === "string" || item.file !== undefined))
+          albumDownloads++;
+    }
+    if (name === "telegram-send-album" && Array.isArray(args.files)) albumDownloads += Math.min(args.files.length, 10);
+    // The album resolver enforces one shared 20 MiB budget for all new downloads.
+    if (albumDownloads) mediaWrites.push({ bytes: 20 * 1048576 + albumDownloads * 1024, files: albumDownloads * 3 });
     return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), {
       ...options,
-      reserveMedia: name === "telegram-download-media",
+      mediaWrites,
       queue: true,
       tool: name,
     });

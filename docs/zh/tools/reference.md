@@ -1,6 +1,6 @@
 # 工具参考
 
-Telegram MCP Server 提供按类别组织的 185 个工具。所有工具通过 MCP 自动发现。
+Telegram MCP Server 提供按类别组织的 186 个工具。所有工具通过 MCP 自动发现。
 
 ## 认证
 
@@ -130,6 +130,7 @@ Telegram MCP Server 提供按类别组织的 185 个工具。所有工具通过 
 
 | 工具 | 说明 |
 | ------ | ------ |
+| `telegram-upload-media` | 通过 base64 分块或公开 HTTPS URL 上传文件，返回用于发送的私有 `fileId` |
 | `telegram-send-file` | 发送文件、图片或文档 |
 | `telegram-download-media` | 下载消息中的媒体 |
 | `telegram-get-profile-photo` | 获取头像 |
@@ -148,6 +149,8 @@ Telegram MCP Server 提供按类别组织的 185 个工具。所有工具通过 
 | `telegram-send-album` | 发送 2–10 张图片/视频组成的相册 |
 
 所有 `filePath` 必须为绝对本地文件路径。URL、UNC 共享、路径穿越（`..`）以及 POSIX 伪文件系统（`/proc`、`/sys`、`/dev`、`/run`）将被拒绝。
+
+远程 AI 客户端发送媒体、快拍和头像时，还可使用 `telegram-upload-media` 返回的完整 `fileId` 或可直接下载的公开 HTTPS `fileUrl`。AI 沙盒中的 `/mnt/data/photo.png` 并不是服务器路径；请先传输实际文件字节或下载链接。每个 base64 分块最多包含 512 KiB 原始字节，完整文件默认限制为 20 MiB。首块提供 `fileName`、`data`、`final:false`；后续提供 `fileId`、`offset:receivedBytes`、`data`；最后使用 `final:true`。收到 `ready:true` 后才能发送。`fileId` 一小时后过期。`mediaType:"document"` 将原始字节作为附件发送。
 
 ## 群组
 

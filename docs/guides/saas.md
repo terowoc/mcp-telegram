@@ -81,3 +81,39 @@ Connect MCP clients to the public `/mcp` endpoint using the advertised OAuth dis
 The dashboard talks only to its own origin. It cannot contact Telegram directly, start a browser worker or persist a browser Telegram session. Former hashed Telegram Web service worker URLs serve a one-time retirement script, and the cabinet clears the old client caches and browser session data on this origin.
 
 Storage remains schema version 3 for coherent rollback. Back up the full stopped service auth directory and preserve the encryption key separately. Removing old accounts is a one-time owner-authorized release action; subsequent deployments never reset accounts.
+
+## Sending files from AI clients
+
+The hosted server cannot read the AI app's sandbox or your computer's filesystem. Provide exactly one source when sending media: a native conversation `file`, a completed `fileId`, a public HTTPS `fileUrl`, or an absolute `filePath` already inside your account's server directory. This applies to files, voice notes, round video notes, album items, stories and profile photos; group photos retain `photoPath` for their local-path option.
+
+For ChatGPT, these tools advertise `openai/fileParams` so the client can supply an attachment directly. The client fills `file` with `download_url` and `file_id`, plus optional `file_name` and `mime_type`; the server downloads its bytes into the account's media directory before sending. The client file ID is not a `telegram-upload-media` handle. Albums accept native attachments in the top-level `files` array. Clients that do not support native attachment parameters must provide actual bytes or a downloadable URL; a sandbox path alone cannot transfer a file.
+
+New downloads in an album share a 20 MiB total limit, so all 2–10 attachments fit the same admission reservation. For larger albums, upload the files separately and send their completed `fileId` handles. Existing server files and uploaded handles do not consume that download budget.
+
+```json
+{"chatId":"@recipient","file":{"download_url":"https://files.example.com/download?signature=temporary","file_id":"file-client-id","file_name":"photo.png"}}
+```
+
+For a downloadable URL, one call is sufficient:
+
+```json
+{"chatId":"@recipient","fileUrl":"https://example.com/photo.png"}
+```
+
+If the AI can read the file bytes, call `telegram-upload-media` first. For a small text document:
+
+```json
+{"fileName":"hello.txt","data":"SGVsbG8K"}
+```
+
+The result includes `fileId`, `receivedBytes`, `ready` and `expiresAt`. Use the returned handle with `telegram-send-file`:
+
+```json
+{"chatId":"@recipient","fileId":"<returned fileId>","mediaType":"document"}
+```
+
+For larger files, encode each chunk separately as standard base64. Each chunk may contain at most 512 KiB of raw bytes, keeping requests below the gateway's 1 MiB JSON limit. The first call includes `fileName`, `data` and `final:false`. Continue with the returned `fileId`, `offset` equal to `receivedBytes`, and `data`. Set `final:true` on the last chunk and wait for `ready:true` before sending. Retrying an identical chunk at the same offset is safe. Uploading does not send a Telegram message. Sending retains the existing no-automatic-retry behavior to avoid duplicate messages after uncertain delivery.
+
+Files retain their original names and extensions. Photos and videos use automatic detection; `mediaType:"document"` sends the original bytes as an attachment. The default per-file limit is 20 MiB. Account and aggregate disk quotas apply to staging as well as downloads. File handles are private to the authenticated account, survive worker restarts and expire after one hour. The gateway removes expired files at startup and every five minutes, with a one-minute grace period for active sends. Account deletion also removes staged files.
+
+Use direct download URLs, including signed HTTPS URLs. HTML sharing pages, AI-only `sandbox:` links, private addresses and redirects into private networks are rejected. If an AI app exposes neither bytes nor a downloadable URL, its sandbox attachment cannot be transferred by the MCP tool alone; the client must make one of those sources available. Read-only access disables uploads and sending. After updating the server, reconnect the AI client to refresh its tool schemas.

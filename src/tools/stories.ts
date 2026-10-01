@@ -1,20 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
-import {
-  ABSOLUTE_PATH_ERROR,
-  DESTRUCTIVE,
-  fail,
-  isSafeAbsolutePath,
-  ok,
-  READ_ONLY,
-  requireConnection,
-  sanitize,
-  sanitizeInputText,
-  WRITE,
-} from "./shared.js";
+import { mediaSourceMeta, mediaSourceSchema, resolveMediaSource } from "./media-source.js";
+import { DESTRUCTIVE, fail, ok, READ_ONLY, requireConnection, sanitize, sanitizeInputText, WRITE } from "./shared.js";
 
-const absolutePath = z.string().refine(isSafeAbsolutePath, { message: ABSOLUTE_PATH_ERROR });
 const safeText = z.string().transform(sanitizeInputText);
 
 /** Curated text for the multi-step report flow result (ReportResultSummary).
@@ -162,9 +151,10 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     {
       description:
         "Publish a new story (photo or video) to your profile or a channel you manage. Privacy: everyone/contacts/close_friends/selected (allowUserIds required for 'selected'). MediaAreas not supported in this version.",
+      _meta: mediaSourceMeta,
       inputSchema: {
         chatId: z.string().default("me").describe("Peer to post the story to — 'me', @username, or numeric ID"),
-        filePath: absolutePath.describe("Absolute path to the photo or video file to upload"),
+        ...mediaSourceSchema,
         type: z.enum(["photo", "video"]).optional().describe("Override auto-detected media type"),
         caption: safeText.pipe(z.string().max(2048)).optional().describe("Story caption (max 2048 chars)"),
         parseMode: z.enum(["md", "html"]).optional().describe("Caption parse mode: md or html"),
@@ -191,7 +181,11 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     },
     async ({
       chatId,
+      file,
       filePath,
+      fileId,
+      fileUrl,
+      fileName,
       type,
       caption,
       parseMode,
@@ -208,7 +202,8 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
         return fail(new Error("privacy='selected' requires at least one user ID in allowUserIds"));
       }
       try {
-        const result = await telegram.sendStory(chatId, filePath, {
+        const path = await resolveMediaSource({ file, filePath, fileId, fileUrl, fileName });
+        const result = await telegram.sendStory(chatId, path, {
           type,
           caption,
           parseMode,
@@ -231,10 +226,11 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     "telegram-edit-story",
     {
       description: "Edit an existing story: replace media, update caption ('' clears it), or change privacy rules.",
+      _meta: mediaSourceMeta,
       inputSchema: {
         chatId: z.string().default("me").describe("Peer owning the story"),
         storyId: z.number().int().positive().describe("ID of the story to edit"),
-        filePath: absolutePath.optional().describe("Absolute path to replacement media"),
+        ...mediaSourceSchema,
         type: z.enum(["photo", "video"]).optional().describe("Override auto-detected media type for new file"),
         caption: safeText.pipe(z.string().max(2048)).optional().describe("New caption; pass '' to clear"),
         parseMode: z.enum(["md", "html"]).optional().describe("Caption parse mode"),
@@ -253,10 +249,25 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
       },
       annotations: WRITE,
     },
-    async ({ chatId, storyId, filePath, type, caption, parseMode, privacy, allowUserIds, disallowUserIds }) => {
+    async ({
+      chatId,
+      storyId,
+      file,
+      filePath,
+      fileId,
+      fileUrl,
+      fileName,
+      type,
+      caption,
+      parseMode,
+      privacy,
+      allowUserIds,
+      disallowUserIds,
+    }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
-      if (filePath === undefined && caption === undefined && privacy === undefined) {
+      const hasMedia = file !== undefined || filePath !== undefined || fileId !== undefined || fileUrl !== undefined;
+      if (!hasMedia && caption === undefined && privacy === undefined) {
         return fail(new Error("At least one field (filePath, caption, or privacy) must be provided"));
       }
       if (privacy === "selected" && !allowUserIds?.length) {
@@ -264,7 +275,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
       }
       try {
         const result = await telegram.editStory(chatId, storyId, {
-          filePath,
+          filePath: hasMedia ? await resolveMediaSource({ file, filePath, fileId, fileUrl, fileName }) : undefined,
           type,
           caption,
           parseMode,

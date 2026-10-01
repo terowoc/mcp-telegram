@@ -2,6 +2,8 @@ import type { McpRegisteredTool, McpServerInternal } from "./ipc-protocol.js";
 
 const ADMIN = new Set(["telegram-status", "telegram-login", "telegram-logout", "telegram-doctor"]);
 const ENUMERATION = new Set(["telegram-list-chats", "telegram-get-unread", "telegram-inbox"]);
+// File staging touches only this account's private storage, never Telegram chats.
+const LOCAL_MEDIA = new Set(["telegram-upload-media"]);
 // Explicit scope contracts: new tools stay unavailable under a chat allowlist until reviewed.
 const SCOPED = new Set([
   "telegram-read-messages",
@@ -63,14 +65,20 @@ export class ToolPolicy {
   visible(name: string, tool: McpRegisteredTool): boolean {
     if (this.profile === "read" && tool.annotations?.readOnlyHint !== true) return false;
     if (this.profile === "curated" && !CURATED.has(name)) return false;
-    return !this.hasChatRestriction() || ADMIN.has(name) || ENUMERATION.has(name) || SCOPED.has(name);
+    return (
+      !this.hasChatRestriction() ||
+      ADMIN.has(name) ||
+      ENUMERATION.has(name) ||
+      LOCAL_MEDIA.has(name) ||
+      SCOPED.has(name)
+    );
   }
   async authorize(
     name: string,
     args: Record<string, unknown>,
     resolve: (id: string) => Promise<string>,
   ): Promise<Record<string, unknown>> {
-    if (!this.hasChatRestriction() || ADMIN.has(name) || ENUMERATION.has(name)) return args;
+    if (!this.hasChatRestriction() || ADMIN.has(name) || ENUMERATION.has(name) || LOCAL_MEDIA.has(name)) return args;
     if (!SCOPED.has(name)) throw new Error("Tool is unavailable under the chat scope policy");
     const fields = name === "telegram-forward-message" ? ["fromChatId", "toChatId"] : ["chatId"];
     const canonical = { ...args };
