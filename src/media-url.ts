@@ -40,7 +40,10 @@ export function isPublicMediaAddress(address: string): boolean {
 type Dependencies = {
   lookup?: (host: string) => Promise<Array<{ address: string; family: number }>>;
   request?: typeof get;
+  mimeType?: string;
+  maxBytes?: number;
 };
+export const MEDIA_DOWNLOAD_BYTES = 20 * 1048576;
 const extensions: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
@@ -55,14 +58,17 @@ const extensions: Record<string, string> = {
   "application/pdf": ".pdf",
   "text/plain": ".txt",
 };
-function filename(url: URL, response: IncomingMessage, override?: string): string {
+function filename(url: URL, response: IncomingMessage, override?: string, nativeMime?: string): string {
   if (override) return validateMediaName(override);
   const disposition = response.headers["content-disposition"] ?? "";
   const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
   const plain = /filename="([^"\r\n]+)"|filename=([^;\r\n]+)/i.exec(disposition);
   let name = encoded ? decodeURIComponent(encoded) : (plain?.[1] ?? plain?.[2]?.trim());
   if (!name) name = decodeURIComponent(basename(url.pathname)) || "download";
-  const mime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase() ?? "";
+  const responseMime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase() ?? "";
+  const mime = extensions[responseMime]
+    ? responseMime
+    : (nativeMime?.split(";")[0].trim().toLowerCase() ?? responseMime);
   if (!extname(name)) name += extensions[mime] ?? ".bin";
   return validateMediaName(name);
 }
@@ -133,10 +139,13 @@ export async function importMediaUrl(
       const mime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase();
       if (mime === "text/html" || mime === "application/xhtml+xml")
         throw new Error("Media URL returned HTML; provide a direct downloadable file URL");
-      const maxBytes = Number(process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES ?? 20 * 1048576);
+      const maxBytes = Math.min(
+        Number(process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES ?? MEDIA_DOWNLOAD_BYTES),
+        deps.maxBytes ?? Number.POSITIVE_INFINITY,
+      );
       const length = Number(response.headers["content-length"]);
       if (Number.isFinite(length) && length > maxBytes) throw new Error("Media size exceeds configured limit");
-      return await store.importStream(filename(url, response, fileName), response);
+      return await store.importStream(filename(url, response, fileName, deps.mimeType), response, maxBytes);
     } finally {
       response.destroy();
     }

@@ -5,7 +5,19 @@ import { MEDIA_ID_PATTERN, mediaUploadStore } from "../media-upload.js";
 import { importMediaUrl } from "../media-url.js";
 import { ABSOLUTE_PATH_ERROR, isSafeAbsolutePath } from "./shared.js";
 
+export const chatFileSchema = z.object({
+  download_url: z.string().url().max(8192),
+  file_id: z.string().min(1).max(256),
+  mime_type: z.string().max(256).optional(),
+  file_name: z.string().max(200).optional(),
+});
+export const mediaSourceMeta = { "openai/fileParams": ["file"] };
 export const mediaSourceSchema = {
+  file: chatFileSchema
+    .optional()
+    .describe(
+      "Attachment supplied by ChatGPT or another client as a file object with download_url and file_id. Prefer this for files attached or generated in the conversation; do not pass its sandbox path.",
+    ),
   filePath: z
     .string()
     .min(1)
@@ -34,16 +46,31 @@ export const mediaSourceSchema = {
       "Original filename with extension for URL downloads or local documents; uploaded fileId already preserves its filename",
     ),
 };
-export type MediaSource = { filePath?: string; fileId?: string; fileUrl?: string; fileName?: string };
-export async function resolveMediaSource(source: MediaSource): Promise<string> {
-  if ([source.filePath, source.fileId, source.fileUrl].filter((value) => value !== undefined).length !== 1)
+export type MediaSource = {
+  file?: z.infer<typeof chatFileSchema>;
+  filePath?: string;
+  fileId?: string;
+  fileUrl?: string;
+  fileName?: string;
+};
+export async function resolveMediaSource(
+  source: MediaSource,
+  importUrl = importMediaUrl,
+  maxBytes?: number,
+): Promise<string> {
+  if ([source.file, source.filePath, source.fileId, source.fileUrl].filter((value) => value !== undefined).length !== 1)
     throw new Error(
-      "Provide exactly one media source: filePath on the MCP server, fileId from telegram-upload-media, or a downloadable HTTPS fileUrl",
+      "Provide exactly one media source: an attached file object, filePath on the MCP server, fileId from telegram-upload-media, or a downloadable HTTPS fileUrl",
     );
   if (source.fileId) return mediaUploadStore().resolve(source.fileId);
-  if (source.fileUrl) {
+  if (source.fileUrl || source.file) {
     const store = mediaUploadStore();
-    const file = await importMediaUrl(source.fileUrl, source.fileName, store);
+    const file = await importUrl(
+      source.file?.download_url ?? (source.fileUrl as string),
+      source.fileName ?? source.file?.file_name,
+      store,
+      { mimeType: source.file?.mime_type, maxBytes },
+    );
     return store.resolve(file.fileId);
   }
   try {

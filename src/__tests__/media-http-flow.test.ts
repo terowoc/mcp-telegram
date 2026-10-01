@@ -74,6 +74,26 @@ test("hosted HTTP catalog uploads a file larger than one request and delivers it
   try {
     const catalog = await request("tools/list");
     const sendSchema = catalog.tools.find((tool: { name: string }) => tool.name === "telegram-send-file").inputSchema;
+    for (const name of [
+      "telegram-send-file",
+      "telegram-upload-media",
+      "telegram-send-voice",
+      "telegram-send-video-note",
+      "telegram-set-profile-photo",
+      "telegram-send-story",
+      "telegram-edit-story",
+      "telegram-edit-group",
+    ]) {
+      const tool = catalog.tools.find((entry: { name: string }) => entry.name === name);
+      assert.deepEqual(tool._meta["openai/fileParams"], ["file"], name);
+      const fileSchema = tool.inputSchema.properties.file;
+      assert.deepEqual(fileSchema.required.sort(), ["download_url", "file_id"]);
+      for (const field of ["download_url", "file_id", "mime_type", "file_name"])
+        assert.ok(fileSchema.properties[field]);
+    }
+    const album = catalog.tools.find((tool: { name: string }) => tool.name === "telegram-send-album");
+    assert.deepEqual(album._meta["openai/fileParams"], ["files"]);
+    assert.deepEqual(album.inputSchema.properties.files.items.required.sort(), ["download_url", "file_id"]);
     assert.ok(sendSchema.properties.fileId);
     assert.ok(sendSchema.properties.fileUrl);
     assert.ok(!sendSchema.required.includes("filePath"));

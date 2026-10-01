@@ -225,7 +225,12 @@ export class MediaUploadStore {
       throw error;
     }
   }
-  async importStream(fileName: string, stream: AsyncIterable<Uint8Array>): Promise<UploadedMedia> {
+  async importStream(
+    fileName: string,
+    stream: AsyncIterable<Uint8Array>,
+    maxBytes = this.maxBytes,
+  ): Promise<UploadedMedia> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Media download byte budget exhausted");
     const { fileId, info } = await this.create(fileName);
     let size = 0;
     try {
@@ -233,7 +238,8 @@ export class MediaUploadStore {
       try {
         for await (const bytes of stream) {
           operationSignal()?.throwIfAborted();
-          if (size + bytes.length > this.maxBytes) throw new Error("Media size exceeds configured limit");
+          if (size + bytes.length > Math.min(this.maxBytes, maxBytes))
+            throw new Error("Media size exceeds configured limit or remaining album download budget");
           await this.checkQuota(bytes.length);
           await file.writeFile(bytes);
           size += bytes.length;

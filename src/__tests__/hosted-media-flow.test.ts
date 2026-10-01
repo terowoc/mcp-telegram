@@ -99,6 +99,23 @@ test("AI bytes upload through MCP and send as photo, document, voice, video note
     }
     assert.equal(sent.length, 10);
     for (const item of sent.slice(6)) assert.equal(await readFile(item.path, "utf8"), "AI bytes");
+    const file = { download_url: "https://127.0.0.1/secret", file_id: "file-client-id", file_name: "photo.png" };
+    for (const [name, args] of [
+      ["telegram-upload-media", { file }],
+      ["telegram-send-file", { chatId: "42", file }],
+      ["telegram-send-voice", { chatId: "42", file }],
+      ["telegram-send-video-note", { chatId: "42", file }],
+      ["telegram-send-album", { chatId: "42", files: [file, file] }],
+      ["telegram-set-profile-photo", { file }],
+      ["telegram-send-story", { chatId: "me", file }],
+      ["telegram-edit-story", { chatId: "me", storyId: 1, file }],
+      ["telegram-edit-group", { chatId: "42", file }],
+    ] as const) {
+      const response = (await unrestricted.call(name, args)) as { isError: boolean; content: Array<{ text: string }> };
+      assert.equal(response.isError, true, name);
+      assert.match(response.content[0].text, /public/, name);
+    }
+    assert.equal(sent.length, 10, "Rejected native downloads must not send any Telegram messages");
     applyToolProfile(internal, new ToolPolicy({ profile: "read" }));
     await assert.rejects(executor.call("telegram-upload-media", { fileName: "x", data: "eA==" }), /Unknown/);
   } finally {

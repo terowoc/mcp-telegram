@@ -526,11 +526,17 @@ export class WorkerSupervisor {
       "telegram-edit-story",
       "telegram-edit-group",
     ]);
-    if (sourceTools.has(name) && typeof args.fileUrl === "string") mediaWrites.push(remote);
+    if (sourceTools.has(name) && (typeof args.fileUrl === "string" || args.file !== undefined))
+      mediaWrites.push(remote);
+    let albumDownloads = 0;
     if (name === "telegram-send-album" && Array.isArray(args.items)) {
       for (const item of args.items.slice(0, 10))
-        if (item && typeof item === "object" && typeof item.fileUrl === "string") mediaWrites.push(remote);
+        if (item && typeof item === "object" && (typeof item.fileUrl === "string" || item.file !== undefined))
+          albumDownloads++;
     }
+    if (name === "telegram-send-album" && Array.isArray(args.files)) albumDownloads += Math.min(args.files.length, 10);
+    // The album resolver enforces one shared 20 MiB budget for all new downloads.
+    if (albumDownloads) mediaWrites.push({ bytes: 20 * 1048576 + albumDownloads * 1024, files: albumDownloads * 3 });
     return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), {
       ...options,
       mediaWrites,

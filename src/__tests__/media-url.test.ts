@@ -51,7 +51,9 @@ test("URL import pins DNS, preserves MIME extensions and rejects redirects into 
         const response = Readable.from(redirect ? [] : [Buffer.from("PNG bytes")]);
         Object.assign(response, {
           statusCode: redirect ? 302 : 200,
-          headers: redirect ? { location: "https://internal.test/secret" } : { "content-type": "image/png" },
+          headers: redirect
+            ? { location: "https://internal.test/secret" }
+            : { "content-type": url.pathname === "/opaque" ? "application/octet-stream" : "image/png" },
         });
         callback(response as IncomingMessage);
       });
@@ -72,6 +74,16 @@ test("URL import pins DNS, preserves MIME extensions and rejects redirects into 
       /public/,
     );
     assert.deepEqual(calls, ["public.test", "public.test"]);
+    const native = await importMediaUrl("https://public.test/opaque", undefined, store, {
+      lookup,
+      request,
+      mimeType: "image/png",
+    });
+    assert.equal(
+      native.fileName,
+      "opaque.png",
+      "Native MIME must preserve photo classification when no filename is supplied",
+    );
     for (const url of [
       "http://public.test/a",
       "https://user:pass@public.test/a",
@@ -104,8 +116,41 @@ test("oversized and HTML URL responses do not leave uploads or continue consumin
     const deps = { lookup: async () => [{ address: "8.8.8.8", family: 4 }], request };
     await assert.rejects(importMediaUrl("https://public.test/video", undefined, store, deps), /size/);
     await assert.rejects(importMediaUrl("https://public.test/html", undefined, store, deps), /HTML|downloadable/);
+    await assert.rejects(
+      importMediaUrl("https://public.test/video", undefined, new MediaUploadStore({ root }), { ...deps, maxBytes: 5 }),
+      /size|budget/,
+    );
     assert.deepEqual(await readdir(join(root, ".mcp-uploads")), []);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("single URL imports respect a configured limit above the default album budget", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tg-configured-url-"));
+  const previous = process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES;
+  process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES = String(40 * 1048576);
+  const request = ((_url: URL, _options: unknown, callback: (res: IncomingMessage) => void) => {
+    const req = new EventEmitter();
+    queueMicrotask(() => {
+      const response = Readable.from([Buffer.alloc(21 * 1048576)]);
+      Object.assign(response, { statusCode: 200, headers: { "content-type": "video/mp4" } });
+      callback(response as IncomingMessage);
+    });
+    return req as ClientRequest;
+  }) as typeof get;
+  try {
+    const store = new MediaUploadStore({ root, maxBytes: 40 * 1048576 });
+    const deps = { lookup: async () => [{ address: "8.8.8.8", family: 4 }], request };
+    const result = await importMediaUrl("https://public.test/video", undefined, store, deps);
+    assert.equal(result.receivedBytes, 21 * 1048576);
+    await assert.rejects(
+      importMediaUrl("https://public.test/video", undefined, store, { ...deps, maxBytes: 20 * 1048576 }),
+      /size|budget/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES;
+    else process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES = previous;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -84,7 +84,15 @@ Storage remains schema version 3 for coherent rollback. Back up the full stopped
 
 ## Sending files from AI clients
 
-The hosted server cannot read the AI app's sandbox or your computer's filesystem. Provide exactly one source when sending media: a completed `fileId`, a public HTTPS `fileUrl`, or an absolute `filePath` already inside your account's server directory. This applies to files, voice notes, round video notes, album items, stories and profile photos; group photos retain `photoPath` for their local-path option.
+The hosted server cannot read the AI app's sandbox or your computer's filesystem. Provide exactly one source when sending media: a native conversation `file`, a completed `fileId`, a public HTTPS `fileUrl`, or an absolute `filePath` already inside your account's server directory. This applies to files, voice notes, round video notes, album items, stories and profile photos; group photos retain `photoPath` for their local-path option.
+
+For ChatGPT, these tools advertise `openai/fileParams` so the client can supply an attachment directly. The client fills `file` with `download_url` and `file_id`, plus optional `file_name` and `mime_type`; the server downloads its bytes into the account's media directory before sending. The client file ID is not a `telegram-upload-media` handle. Albums accept native attachments in the top-level `files` array. Clients that do not support native attachment parameters must provide actual bytes or a downloadable URL; a sandbox path alone cannot transfer a file.
+
+New downloads in an album share a 20 MiB total limit, so all 2–10 attachments fit the same admission reservation. For larger albums, upload the files separately and send their completed `fileId` handles. Existing server files and uploaded handles do not consume that download budget.
+
+```json
+{"chatId":"@recipient","file":{"download_url":"https://files.example.com/download?signature=temporary","file_id":"file-client-id","file_name":"photo.png"}}
+```
 
 For a downloadable URL, one call is sufficient:
 

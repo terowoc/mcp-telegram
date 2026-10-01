@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pageLimit } from "../limits.js";
 import type { TelegramService } from "../telegram-client.js";
-import { mediaSourceSchema, resolveMediaSource } from "./media-source.js";
+import { mediaSourceMeta, mediaSourceSchema, resolveMediaSource } from "./media-source.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, requireConnection, WRITE } from "./shared.js";
 
 const MUTE_FOREVER_UNTIL = 2147483647; // max 32-bit signed int
@@ -654,6 +654,7 @@ export function registerAccountTools(server: McpServer, telegram: TelegramServic
     {
       description:
         "Upload and set a new profile photo using fileId, a public HTTPS fileUrl, or server-local filePath. Supports JPEG/PNG for static avatar or MP4 for animated avatar (square, up to 10s). Optionally set as fallback photo shown to users who cannot see your main photo.",
+      _meta: mediaSourceMeta,
       inputSchema: {
         ...mediaSourceSchema,
         isVideo: z.boolean().default(false).describe("true if file is an MP4 animated avatar; false for static photo"),
@@ -671,11 +672,11 @@ export function registerAccountTools(server: McpServer, telegram: TelegramServic
       },
       annotations: WRITE,
     },
-    async ({ filePath, fileId, fileUrl, fileName, isVideo, videoStartTs, fallback }) => {
+    async ({ file, filePath, fileId, fileUrl, fileName, isVideo, videoStartTs, fallback }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
       try {
-        const path = await resolveMediaSource({ filePath, fileId, fileUrl, fileName });
+        const path = await resolveMediaSource({ file, filePath, fileId, fileUrl, fileName });
         const { id } = await telegram.setProfilePhoto({ filePath: path, isVideo, videoStartTs, fallback });
         const label = fallback ? "Fallback profile photo" : "Profile photo";
         return ok(`${label} updated [id=${id}]`);

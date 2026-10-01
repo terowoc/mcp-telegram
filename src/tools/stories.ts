@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
-import { mediaSourceSchema, resolveMediaSource } from "./media-source.js";
+import { mediaSourceMeta, mediaSourceSchema, resolveMediaSource } from "./media-source.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, requireConnection, sanitize, sanitizeInputText, WRITE } from "./shared.js";
 
 const safeText = z.string().transform(sanitizeInputText);
@@ -151,6 +151,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     {
       description:
         "Publish a new story (photo or video) to your profile or a channel you manage. Privacy: everyone/contacts/close_friends/selected (allowUserIds required for 'selected'). MediaAreas not supported in this version.",
+      _meta: mediaSourceMeta,
       inputSchema: {
         chatId: z.string().default("me").describe("Peer to post the story to — 'me', @username, or numeric ID"),
         ...mediaSourceSchema,
@@ -180,6 +181,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     },
     async ({
       chatId,
+      file,
       filePath,
       fileId,
       fileUrl,
@@ -200,7 +202,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
         return fail(new Error("privacy='selected' requires at least one user ID in allowUserIds"));
       }
       try {
-        const path = await resolveMediaSource({ filePath, fileId, fileUrl, fileName });
+        const path = await resolveMediaSource({ file, filePath, fileId, fileUrl, fileName });
         const result = await telegram.sendStory(chatId, path, {
           type,
           caption,
@@ -224,6 +226,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     "telegram-edit-story",
     {
       description: "Edit an existing story: replace media, update caption ('' clears it), or change privacy rules.",
+      _meta: mediaSourceMeta,
       inputSchema: {
         chatId: z.string().default("me").describe("Peer owning the story"),
         storyId: z.number().int().positive().describe("ID of the story to edit"),
@@ -249,6 +252,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     async ({
       chatId,
       storyId,
+      file,
       filePath,
       fileId,
       fileUrl,
@@ -262,7 +266,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
     }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
-      const hasMedia = filePath !== undefined || fileId !== undefined || fileUrl !== undefined;
+      const hasMedia = file !== undefined || filePath !== undefined || fileId !== undefined || fileUrl !== undefined;
       if (!hasMedia && caption === undefined && privacy === undefined) {
         return fail(new Error("At least one field (filePath, caption, or privacy) must be provided"));
       }
@@ -271,7 +275,7 @@ export function registerStoryTools(server: McpServer, telegram: TelegramService)
       }
       try {
         const result = await telegram.editStory(chatId, storyId, {
-          filePath: hasMedia ? await resolveMediaSource({ filePath, fileId, fileUrl, fileName }) : undefined,
+          filePath: hasMedia ? await resolveMediaSource({ file, filePath, fileId, fileUrl, fileName }) : undefined,
           type,
           caption,
           parseMode,
