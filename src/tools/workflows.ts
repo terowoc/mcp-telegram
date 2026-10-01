@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { boundedMap } from "../bounded-map.js";
 import { pageLimit } from "../limits.js";
 import { operationSignal } from "../operation-context.js";
 import type { TelegramService } from "../telegram-client.js";
@@ -52,18 +53,21 @@ export function registerWorkflowTools(server: McpServer, telegram: TelegramServi
       if (connection) return fail(new Error(connection));
       try {
         const dialogs = (await telegram.getUnreadDialogs(limit)).slice(0, limit);
-        const chats = [];
-        for (const dialog of dialogs) {
-          operationSignal()?.throwIfAborted();
-          const messages = (await telegram.getMessages(dialog.id, messagesPerChat)).slice(0, messagesPerChat);
-          chats.push({
-            id: dialog.id,
-            name: dialog.name,
-            unreadCount: dialog.unreadCount,
-            messages,
-            nextOffsetId: messages.at(-1)?.id,
-          });
-        }
+        const chats = await boundedMap(
+          dialogs,
+          3,
+          async (dialog) => {
+            const messages = (await telegram.getMessages(dialog.id, messagesPerChat)).slice(0, messagesPerChat);
+            return {
+              id: dialog.id,
+              name: dialog.name,
+              unreadCount: dialog.unreadCount,
+              messages,
+              nextOffsetId: messages.at(-1)?.id,
+            };
+          },
+          operationSignal(),
+        );
         const text = chats
           .map(
             (chat) =>

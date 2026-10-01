@@ -48,7 +48,11 @@ export class TelegramAuthWorker {
 
   async start(attemptId: string, onEvent: (event: TelegramAuthEvent) => void): Promise<void> {
     if (this.attemptId || this.stopping) throw new Error("Worker already started");
-    const lease = this.options.budget.reserve(`bootstrap:${attemptId}`);
+    const lease = await this.options.budget.reserveWithReclaim(`bootstrap:${attemptId}`);
+    if (this.stopping || this.attemptId) {
+      lease.release();
+      throw new Error("Worker already started or stopping");
+    }
     this.attemptId = attemptId;
     this.onEvent = onEvent;
     let resolveStopped!: () => void;

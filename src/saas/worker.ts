@@ -236,6 +236,7 @@ process.on("message", (raw) => {
     return;
   }
   const current = message.kind === "tool" ? executor : loginExecutor;
+  const connectionBefore = telegram?.diagnostics().connection;
   const controller = new AbortController();
   operations.set(message.id, controller);
   void (async () => {
@@ -243,7 +244,10 @@ process.on("message", (raw) => {
     try {
       result =
         message.kind === "tool"
-          ? await current.call(message.name, message.args, { signal: controller.signal })
+          ? await current.call(message.name, message.args, {
+              signal: controller.signal,
+              deadlineAt: message.deadlineAt,
+            })
           : await current.call(
               "login",
               { attemptId: message.attemptId },
@@ -253,7 +257,15 @@ process.on("message", (raw) => {
       error = controller.signal.aborted ? "Worker request cancelled" : "Telegram operation failed";
     }
     const settling = current.isSettling();
-    send({ kind: "result", generation: message.generation, id: message.id, result, error, settling });
+    const connectionAfter = telegram?.diagnostics().connection;
+    const timing =
+      message.kind === "tool" && connectionBefore && connectionAfter
+        ? {
+            connectionMs: Math.max(0, connectionAfter.totalMs - connectionBefore.totalMs),
+            connectionCold: connectionAfter.attempts > connectionBefore.attempts,
+          }
+        : undefined;
+    send({ kind: "result", generation: message.generation, id: message.id, result, error, settling, timing });
     if (settling) {
       const interval = setInterval(() => {
         if (current.isSettling()) return;

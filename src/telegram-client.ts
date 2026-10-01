@@ -13,8 +13,10 @@ import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
 import { getInputUser, getPeerId } from "telegram/Utils.js";
+import { boundedMap } from "./bounded-map.js";
 import { SingleFlight } from "./connection-lifecycle.js";
 import { mediaPolicy } from "./file-policy.js";
+import { MetadataCache } from "./metadata-cache.js";
 import { operationSignal } from "./operation-context.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type {
@@ -387,7 +389,11 @@ export class TelegramService {
   private readonly sessionStore?: import("./telegram-session-store.js").TelegramSessionStore;
   private rateLimiter = new RateLimiter();
   private lastTypingAt = new Map<string, number>();
-  private entityCache = new Map<string, ChatEntity>();
+  private entityCache = new MetadataCache<string, ChatEntity>(2048, 300000);
+  private senderNames = new MetadataCache<string, string>(1024, 60000);
+  private senderLookups = new Map<string, Promise<string>>();
+  private connectionAttempts = 0;
+  private connectionMs = 0;
   lastError = "";
 
   get sessionDir(): string {
@@ -406,6 +412,7 @@ export class TelegramService {
       loginInProgress: !!this.qrLogin,
       stopping: this.stopping > 0,
       hasError: !!this.lastError,
+      connection: { attempts: this.connectionAttempts, totalMs: Math.round(this.connectionMs) },
     };
   }
 
@@ -526,6 +533,8 @@ export class TelegramService {
     this.connected = false;
     this.client = null;
     this.entityCache.clear();
+    this.senderNames.clear();
+    this.senderLookups.clear();
     if (!dead) return;
     try {
       await dead.destroy();
@@ -548,7 +557,16 @@ export class TelegramService {
 
   async connect(): Promise<boolean> {
     if (this.stopping > 0 || this.qrLogin) return false;
-    return this.connecting.run(() => this.connectOnce());
+    return this.connecting.run(async () => {
+      if (this.isConnected()) return true;
+      const started = performance.now();
+      this.connectionAttempts++;
+      try {
+        return await this.connectOnce();
+      } finally {
+        this.connectionMs += performance.now() - started;
+      }
+    });
   }
 
   private async connectOnce(): Promise<boolean> {
@@ -885,6 +903,8 @@ export class TelegramService {
         this.client = client;
         this.connected = true;
         this.entityCache.clear();
+        this.senderNames.clear();
+        this.senderLookups.clear();
         if (oldClient) {
           oldClient.destroy().catch(() => {});
         }
@@ -1449,6 +1469,7 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const fetchLimit = filterType ? limit * 3 : limit;
     const dialogs = await this.client.getDialogs({ limit: fetchLimit, ...(offsetDate ? { offsetDate } : {}) });
+    for (const dialog of dialogs) if (dialog.entity) this.rememberEntity(dialog.entity);
     const mapped = dialogs
       .filter((d) => this.toolPolicy.allowsChat(d.id?.toString() ?? ""))
       .map((d) => {
@@ -1484,6 +1505,7 @@ export class TelegramService {
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const dialogs = await this.client.getDialogs({ limit: limit * 3 });
+    for (const dialog of dialogs) if (dialog.entity) this.rememberEntity(dialog.entity);
     const unread = dialogs
       .filter((d) => d.unreadCount > 0 && this.toolPolicy.allowsChat(d.id?.toString() ?? ""))
       .slice(0, limit);
@@ -1537,6 +1559,7 @@ export class TelegramService {
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const dialogs = await this.client.getDialogs({ limit: limit * 5 });
+    for (const dialog of dialogs) if (dialog.entity) this.rememberEntity(dialog.entity);
     return dialogs
       .filter((d) => {
         if (d.isGroup || d.isChannel) return false;
@@ -1611,7 +1634,7 @@ export class TelegramService {
     return {
       id: m.id,
       text: m.message ?? "",
-      sender: await this.resolveSenderName(m.senderId),
+      sender: await this.resolveSenderName(m.senderId, m.sender),
       date: new Date((m.date ?? 0) * 1000).toISOString(),
       media: this.extractMediaInfo(m.media),
       reactions: this.extractReactions(m.reactions),
@@ -1711,7 +1734,7 @@ export class TelegramService {
           .map(async (m) => ({
             id: m.id,
             text: m.message ?? "",
-            sender: await this.resolveSenderName(m.senderId),
+            sender: await this.resolveSenderName(m.senderId, m.sender),
             date: new Date((m.date ?? 0) * 1000).toISOString(),
             media: this.extractMediaInfo(m.media),
             reactions: this.extractReactions(m.reactions),
@@ -1772,7 +1795,7 @@ export class TelegramService {
           .map(async (m) => ({
             id: m.id,
             text: m.message ?? "",
-            sender: await this.resolveSenderName(m.senderId),
+            sender: await this.resolveSenderName(m.senderId, m.sender),
             date: new Date((m.date ?? 0) * 1000).toISOString(),
             media: this.extractMediaInfo(m.media),
             reactions: this.extractReactions(m.reactions),
@@ -1829,7 +1852,7 @@ export class TelegramService {
           .map(async (m) => ({
             id: m.id,
             text: m.message ?? "",
-            sender: await this.resolveSenderName(m.senderId),
+            sender: await this.resolveSenderName(m.senderId, m.sender),
             date: new Date((m.date ?? 0) * 1000).toISOString(),
             media: this.extractMediaInfo(m.media),
             reactions: this.extractReactions(m.reactions),
@@ -1910,6 +1933,16 @@ export class TelegramService {
    * Resolve a chat by ID, username, or display name.
    * Falls back to searching user's dialogs if getEntity() fails.
    */
+  private rememberEntity(entity: unknown): void {
+    if (entity instanceof Api.User || entity instanceof Api.Channel || entity instanceof Api.Chat) {
+      // Marked keys keep Telegram's overlapping user/group/channel ID spaces distinct.
+      const key = getPeerId(entity).toString();
+      this.entityCache.set(key, entity);
+      const name = this.senderDisplayName(entity);
+      if (name) this.senderNames.set(key, name);
+    }
+  }
+
   async resolveChat(chatId: string): Promise<ChatEntity> {
     if (!this.client) throw new Error(NOT_CONNECTED_ERROR);
 
@@ -1927,6 +1960,7 @@ export class TelegramService {
 
     // Search dialogs by display name
     const dialogs = await this.client.getDialogs({ limit: 100 });
+    for (const dialog of dialogs) if (dialog.entity) this.rememberEntity(dialog.entity);
     const query = chatId.toLowerCase();
 
     // Exact match first
@@ -2013,6 +2047,7 @@ export class TelegramService {
     const isMarked = chatId.startsWith("-");
     try {
       const dialogs = await this.client.getDialogs({ limit: 100 });
+      for (const dialog of dialogs) if (dialog.entity) this.rememberEntity(dialog.entity);
       const match = dialogs.find((d) => {
         const entity = d.entity;
         if (!entity?.id) return false;
@@ -2130,21 +2165,38 @@ export class TelegramService {
   }
 
   /** Resolve sender ID to a display name */
-  private async resolveSenderName(senderId: bigInt.BigInteger | undefined): Promise<string> {
+  private senderDisplayName(entity: unknown): string | undefined {
+    if (entity instanceof Api.User) {
+      const name = [entity.firstName, entity.lastName].filter(Boolean).join(" ") || "Unknown";
+      return entity.username ? `${name} (@${entity.username})` : name;
+    }
+    if (entity instanceof Api.Channel || entity instanceof Api.Chat) return entity.title ?? "Group";
+    return undefined;
+  }
+  private async resolveSenderName(senderId: bigInt.BigInteger | undefined, sender?: unknown): Promise<string> {
+    const attached = this.senderDisplayName(sender);
+    if (attached) return attached;
     if (!senderId || !this.client) return "unknown";
+    const key = senderId.toString();
+    const cached = this.senderNames.get(key);
+    if (cached) return cached;
+    const inFlight = this.senderLookups.get(key);
+    if (inFlight) return inFlight;
+    const client = this.client;
+    const lookup = (async () => {
+      try {
+        const name = this.senderDisplayName(await client.getEntity(senderId)) ?? key;
+        if (this.client === client) this.senderNames.set(key, name);
+        return name;
+      } catch {
+        return key;
+      }
+    })();
+    this.senderLookups.set(key, lookup);
     try {
-      const entity = await this.client.getEntity(senderId);
-      if (entity instanceof Api.User) {
-        const parts = [entity.firstName, entity.lastName].filter(Boolean);
-        const name = parts.join(" ") || "Unknown";
-        return entity.username ? `${name} (@${entity.username})` : name;
-      }
-      if (entity instanceof Api.Channel || entity instanceof Api.Chat) {
-        return entity.title ?? "Group";
-      }
-      return senderId.toString();
-    } catch {
-      return senderId.toString();
+      return await lookup;
+    } finally {
+      if (this.senderLookups.get(key) === lookup) this.senderLookups.delete(key);
     }
   }
 
@@ -2180,7 +2232,7 @@ export class TelegramService {
       filtered.map(async (m) => ({
         id: m.id,
         text: m.message ?? "",
-        sender: await this.resolveSenderName(m.senderId),
+        sender: await this.resolveSenderName(m.senderId, m.sender),
         date: new Date((m.date ?? 0) * 1000).toISOString(),
         media: this.extractMediaInfo(m.media),
         reactions: this.extractReactions(m.reactions),
@@ -2203,7 +2255,8 @@ export class TelegramService {
     }>
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
-    const result = await this.client.invoke(new Api.contacts.Search({ q: query, limit }));
+    const client = this.client;
+    const result = await client.invoke(new Api.contacts.Search({ q: query, limit }));
     const chats: Array<{
       id: string;
       name: string;
@@ -2242,27 +2295,31 @@ export class TelegramService {
       }
     }
 
-    // Enrich channels/groups with description and accurate members count
-    for (const chat of chats) {
-      if (chat.type === "private") continue;
-      try {
-        const entity = await this.client.getEntity(chat.id);
-        if (entity instanceof Api.Channel) {
-          const full = await this.client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
-          if (full.fullChat instanceof Api.ChannelFull) {
-            chat.description = full.fullChat.about || undefined;
-            chat.membersCount = full.fullChat.participantsCount ?? chat.membersCount;
+    for (const entity of [...result.users, ...result.chats]) this.rememberEntity(entity);
+    const entities = new Map(result.chats.map((entity) => [entity.id.toString(), entity]));
+    const groups = chats.filter((chat) => chat.type !== "private");
+    await boundedMap(
+      groups,
+      3,
+      async (chat) => {
+        const entity = entities.get(chat.id);
+        try {
+          if (entity instanceof Api.Channel) {
+            const full = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+            if (full.fullChat instanceof Api.ChannelFull) {
+              chat.description = full.fullChat.about || undefined;
+              chat.membersCount = full.fullChat.participantsCount ?? chat.membersCount;
+            }
+          } else if (entity instanceof Api.Chat) {
+            const full = await client.invoke(new Api.messages.GetFullChat({ chatId: entity.id }));
+            if (full.fullChat instanceof Api.ChatFull) chat.description = full.fullChat.about || undefined;
           }
-        } else if (entity instanceof Api.Chat) {
-          const full = await this.client.invoke(new Api.messages.GetFullChat({ chatId: entity.id }));
-          if (full.fullChat instanceof Api.ChatFull) {
-            chat.description = full.fullChat.about || undefined;
-          }
+        } catch {
+          /* Optional enrichment may be unavailable for private channels. */
         }
-      } catch {
-        // Skip enrichment on error (private channels, etc.)
-      }
-    }
+      },
+      operationSignal(),
+    );
 
     return chats;
   }
@@ -2300,6 +2357,7 @@ export class TelegramService {
     const chatsMap = new Map<string, { id: string; name: string; type: string; username?: string }>();
     if ("chats" in result) {
       for (const chat of result.chats) {
+        this.rememberEntity(chat);
         if (chat instanceof Api.Channel) {
           chatsMap.set(chat.id.toString(), {
             id: chat.id.toString(),
@@ -2318,6 +2376,7 @@ export class TelegramService {
     }
     if ("users" in result) {
       for (const user of result.users) {
+        this.rememberEntity(user);
         if (user instanceof Api.User) {
           const parts = [user.firstName, user.lastName].filter(Boolean);
           chatsMap.set(user.id.toString(), {
@@ -2343,7 +2402,7 @@ export class TelegramService {
         return {
           id: m.id,
           text: m.message ?? "",
-          sender: await this.resolveSenderName(m.senderId),
+          sender: await this.resolveSenderName(m.senderId, m.sender),
           date: new Date((m.date ?? 0) * 1000).toISOString(),
           chat: chatsMap.get(chatId) || { id: chatId, name: "Unknown", type: "unknown" },
           media: this.extractMediaInfo(m.media),
@@ -2385,7 +2444,7 @@ export class TelegramService {
       filtered.map(async (m) => ({
         id: m.id,
         text: m.message ?? "",
-        sender: await this.resolveSenderName(m.senderId),
+        sender: await this.resolveSenderName(m.senderId, m.sender),
         date: new Date((m.date ?? 0) * 1000).toISOString(),
         media: this.extractMediaInfo(m.media),
         reactions: this.extractReactions(m.reactions),
@@ -3311,7 +3370,7 @@ export class TelegramService {
         .map(async (m) => ({
           id: m.id,
           text: m.message ?? "",
-          sender: await this.resolveSenderName(m.senderId),
+          sender: await this.resolveSenderName(m.senderId, m.sender),
           date: new Date((m.date ?? 0) * 1000).toISOString(),
           media: this.extractMediaInfo(m.media),
           reactions: this.extractReactions(m.reactions),
