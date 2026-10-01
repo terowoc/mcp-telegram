@@ -139,6 +139,11 @@ describe("authenticated HTTPS gateway contract", () => {
           "same-origin",
           "OAuth forms must preserve the browser Origin on same-origin POSTs",
         );
+        assert.match(
+          response.headers.get("content-security-policy") ?? "",
+          /form-action 'self' https:\/\/client\.example;/,
+          "OAuth form redirects must reach the validated client callback origin",
+        );
         const html = await response.text();
         assert.equal(html.includes("<script>alert(1)</script>"), false);
         const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
