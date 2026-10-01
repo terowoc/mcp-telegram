@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GlobalLock } from "../global-lock.js";
 import { SaasMediaBudget } from "./media-budget.js";
 import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
@@ -26,6 +27,18 @@ interface Options {
   filesRoot: string;
   maxWorkers?: number;
   idleMs?: number;
+  queueWaitMs?: number;
+  onTiming?: (timing: {
+    tool: string;
+    totalMs: number;
+    admissionMs: number;
+    queueMs: number;
+    executionMs: number;
+    cold: boolean;
+    connectionMs: number;
+    connectionCold: boolean;
+    outcome: "ok" | "error";
+  }) => void;
   spawn?: typeof fork;
   mediaBudget?: Pick<SaasMediaBudget, "reserve">;
   budget?: WorkerBudget;
@@ -40,6 +53,9 @@ interface Pending {
   attemptId?: string;
   stagedSession?: string;
   releaseMedia?: () => void;
+  releaseOperation?: () => void;
+  cancelled?: boolean;
+  onWorkerTiming?: (timing: { connectionMs: number; connectionCold: boolean }) => void;
 }
 interface Slot {
   lease: { release(): void };
@@ -58,11 +74,16 @@ interface Slot {
   idle?: NodeJS.Timeout;
   kill?: NodeJS.Timeout;
   initializing?: Promise<void>;
+  lock: GlobalLock;
+  claims: number;
+  lastUsed: number;
 }
 
 export class WorkerSupervisor {
   private slots = new Map<string, Slot>();
   private closing = false;
+  private admission = new GlobalLock(32);
+  private sequence = 0;
   private readonly maxWorkers: number;
   private readonly mediaBudget: Pick<SaasMediaBudget, "reserve">;
   private readonly budget: WorkerBudget;
@@ -72,6 +93,11 @@ export class WorkerSupervisor {
     this.mediaBudget = options.mediaBudget ?? new SaasMediaBudget({ root: options.filesRoot });
     if (!Number.isSafeInteger(this.maxWorkers) || this.maxWorkers < 1 || this.maxWorkers > 32)
       throw new Error("Invalid worker capacity");
+    if (
+      options.queueWaitMs !== undefined &&
+      (!Number.isSafeInteger(options.queueWaitMs) || options.queueWaitMs < 1 || options.queueWaitMs > 10000)
+    )
+      throw new Error("Invalid worker queue deadline");
     if (options.idleMs !== undefined && (!Number.isSafeInteger(options.idleMs) || options.idleMs < 1))
       throw new Error("Invalid worker idle deadline");
   }
@@ -84,7 +110,51 @@ export class WorkerSupervisor {
       account: this.options.store.getTelegramAccount(userId),
     };
   }
-  private acquire(userId: string, signal?: AbortSignal): Slot {
+  private claim(slot: Slot): Slot {
+    slot.claims++;
+    slot.lastUsed = ++this.sequence;
+    clearTimeout(slot.idle);
+    return slot;
+  }
+  private async acquire(userId: string, signal?: AbortSignal): Promise<Slot> {
+    try {
+      return this.claim(this.acquireSlot(userId, signal));
+    } catch (error) {
+      if (!(error instanceof CapacityError)) throw error;
+    }
+    // Serialize replacement and keep the old reservation until the child actually exits.
+    const release = await this.admission.acquire(signal);
+    try {
+      try {
+        return this.claim(this.acquireSlot(userId, signal));
+      } catch (error) {
+        if (!(error instanceof CapacityError)) throw error;
+      }
+      const idle = [...this.slots.values()]
+        .filter((slot) => slot.state === "ready" && !slot.pending.size && !slot.claims && !slot.lock.isLocked())
+        .sort((a, b) => a.lastUsed - b.lastUsed)[0];
+      if (!idle) throw new CapacityError();
+      await this.waitFor(this.stopSlot(idle), signal);
+      return this.claim(this.acquireSlot(userId, signal));
+    } finally {
+      release();
+    }
+  }
+  async evictIdle(): Promise<void> {
+    const release = await this.admission.acquire();
+    try {
+      if (this.closing) throw new Error("Worker supervisor is closing");
+      if (!this.budget.isFull()) return;
+      const idle = [...this.slots.values()]
+        .filter((slot) => slot.state === "ready" && !slot.pending.size && !slot.claims && !slot.lock.isLocked())
+        .sort((a, b) => a.lastUsed - b.lastUsed)[0];
+      if (!idle) throw new CapacityError();
+      await this.stopSlot(idle);
+    } finally {
+      release();
+    }
+  }
+  private acquireSlot(userId: string, signal?: AbortSignal): Slot {
     signal?.throwIfAborted();
     if (this.closing) throw new Error("Worker supervisor is closing");
     const user = this.options.store.findUser(userId);
@@ -121,6 +191,9 @@ export class WorkerSupervisor {
       stopped,
       resolveStopped,
       pending: new Map(),
+      lock: new GlobalLock(4),
+      claims: 0,
+      lastUsed: 0,
     };
     this.slots.set(userId, slot); // reserve before any asynchronous work
     slot.startup = setTimeout(() => {
@@ -239,6 +312,7 @@ export class WorkerSupervisor {
       return;
     }
     if (message.kind === "result") {
+      if (message.timing) pending.onWorkerTiming?.(message.timing);
       pending.cleanup();
       if (message.error) pending.reject(new Error(message.error));
       else pending.resolve(message.result);
@@ -256,20 +330,24 @@ export class WorkerSupervisor {
     pending.releaseMedia?.();
     clearTimeout(pending.timer);
     slot.pending.delete(id);
+    pending.releaseOperation?.();
     this.armIdle(slot);
   }
   private armIdle(slot: Slot) {
     clearTimeout(slot.idle);
-    if (slot.state !== "ready" || slot.pending.size) return;
+    if (slot.state !== "ready" || slot.pending.size || slot.claims || slot.lock.isLocked()) return;
     slot.idle = setTimeout(() => {
       void this.stopSlot(slot);
-    }, this.options.idleMs ?? 300000);
+    }, this.options.idleMs ?? 1800000);
     slot.idle.unref();
   }
-  private async waitReady(slot: Slot, signal?: AbortSignal) {
+  private waitReady(slot: Slot, signal?: AbortSignal) {
+    return this.waitFor(slot.ready, signal);
+  }
+  private async waitFor(ready: Promise<void>, signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (!signal) {
-      await slot.ready;
+      await ready;
       return;
     }
     let cancel: () => void = () => {};
@@ -279,7 +357,7 @@ export class WorkerSupervisor {
       if (signal.aborted) cancel();
     });
     try {
-      await Promise.race([slot.ready, cancelled]);
+      await Promise.race([ready, cancelled]);
     } finally {
       signal.removeEventListener("abort", cancel);
     }
@@ -293,60 +371,153 @@ export class WorkerSupervisor {
       onEvent?: (event: LoginEvent) => void;
       timeoutMs?: number;
       reserveMedia?: boolean;
+      queue?: boolean;
+      tool?: string;
     } = {},
   ): Promise<unknown> {
-    const slot = this.acquire(userId, options.signal);
-    await this.waitReady(slot, options.signal);
-    options.signal?.throwIfAborted();
-    if (slot.state !== "ready") throw new Error("Worker unavailable");
-    if (slot.pending.size) throw new Error("Telegram worker busy or settling");
-    const releaseMedia = options.reserveMedia ? this.mediaBudget.reserve(userId) : undefined;
-    clearTimeout(slot.idle);
-    const id = randomUUID();
-    return new Promise((resolve, reject) => {
-      const cancel = () => {
-        reject(new Error("Worker request cancelled"));
-        try {
-          this.send(slot, { kind: "cancel", generation: slot.generation, id });
-        } catch {
-          void this.stopSlot(slot);
-        }
-      };
-      const cleanup = () => options.signal?.removeEventListener("abort", cancel);
-      const timer = setTimeout(() => {
-        reject(new Error("Telegram worker deadline exceeded"));
-        void this.stopSlot(slot);
-      }, options.timeoutMs ?? 34000);
+    const started = performance.now();
+    const deadlineAt = Date.now() + (options.timeoutMs ?? 34000);
+    const deadline = new AbortController();
+    const deadlineTimer = setTimeout(
+      () => deadline.abort(new Error("Telegram worker deadline exceeded")),
+      options.timeoutMs ?? 34000,
+    );
+    deadlineTimer.unref();
+    const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
+    const cold = !this.slots.has(userId);
+    let slot: Slot | undefined;
+    let releaseOperation: (() => void) | undefined;
+    let transferred = false;
+    let admissionMs = 0,
+      queueMs = 0,
+      executionStarted = 0,
+      connectionMs = 0,
+      connectionCold = false;
+    let outcome: "ok" | "error" = "error";
+    try {
+      slot = await this.acquire(userId, signal);
+      await this.waitReady(slot, signal);
+      admissionMs = performance.now() - started;
+      signal?.throwIfAborted();
+      if (slot.state !== "ready") throw new Error("Worker unavailable");
+      if ([...slot.pending.values()].some((p) => p.settling || p.cancelled || p.attemptId))
+        throw new Error("Telegram worker busy or settling");
+      if (!options.queue && slot.lock.isLocked()) throw new Error("Telegram worker busy");
+      const queuedAt = performance.now();
+      const wait = new AbortController();
+      const timer = setTimeout(
+        () => wait.abort(new Error("Telegram worker busy: queue deadline exceeded")),
+        this.options.queueWaitMs ?? 5000,
+      );
       timer.unref();
-      slot.pending.set(id, {
-        resolve,
-        reject,
-        timer,
-        cleanup,
-        attemptId: options.attemptId,
-        onEvent: options.onEvent,
-        releaseMedia,
-      });
-      options.signal?.addEventListener("abort", cancel, { once: true });
       try {
-        this.send(slot, build(slot.generation, id));
-        if (options.signal?.aborted) cancel();
-      } catch {
-        reject(new Error("Worker unavailable"));
-        void this.stopSlot(slot);
+        releaseOperation = await slot.lock.acquire(signal ? AbortSignal.any([signal, wait.signal]) : wait.signal);
+      } finally {
+        clearTimeout(timer);
       }
-    });
+      queueMs = performance.now() - queuedAt;
+      signal?.throwIfAborted();
+      if (slot.state !== "ready" || this.slots.get(userId) !== slot) throw new Error("Worker unavailable");
+      const user = this.options.store.findUser(userId);
+      if (!user || user.disabled || user.policy.version !== slot.policyVersion)
+        throw new Error("Telegram worker policy changed");
+      if (Date.now() >= deadlineAt) throw new Error("Telegram worker deadline exceeded");
+      const releaseMedia = options.reserveMedia ? this.mediaBudget.reserve(userId) : undefined;
+      const current = slot;
+      const id = randomUUID();
+      executionStarted = performance.now();
+      const result = await new Promise((resolve, reject) => {
+        const cancel = () => {
+          const pending = current.pending.get(id);
+          if (pending) pending.cancelled = true;
+          reject(new Error("Worker request cancelled"));
+          try {
+            this.send(current, { kind: "cancel", generation: current.generation, id });
+          } catch {
+            void this.stopSlot(current);
+          }
+        };
+        const cleanup = () => signal?.removeEventListener("abort", cancel);
+        const timer = setTimeout(
+          () => {
+            reject(new Error("Telegram worker deadline exceeded"));
+            void this.stopSlot(current);
+          },
+          Math.max(1, deadlineAt - Date.now()),
+        );
+        timer.unref();
+        current.pending.set(id, {
+          resolve,
+          reject,
+          timer,
+          cleanup,
+          attemptId: options.attemptId,
+          onEvent: options.onEvent,
+          releaseMedia,
+          releaseOperation,
+          onWorkerTiming: (timing) => {
+            connectionMs = timing.connectionMs;
+            connectionCold = timing.connectionCold;
+          },
+        });
+        transferred = true; // Exclusivity survives logical cancellation until physical settlement.
+        signal?.addEventListener("abort", cancel, { once: true });
+        try {
+          const message = build(current.generation, id);
+          if (message.kind === "tool") message.deadlineAt = deadlineAt;
+          this.send(current, message);
+          if (signal?.aborted) cancel();
+        } catch {
+          reject(new Error("Worker unavailable"));
+          void this.stopSlot(current);
+        }
+      });
+      outcome = result && typeof result === "object" && "isError" in result && result.isError === true ? "error" : "ok";
+      return result;
+    } finally {
+      clearTimeout(deadlineTimer);
+      if (!transferred) releaseOperation?.();
+      if (slot) {
+        slot.claims--;
+        this.armIdle(slot);
+      }
+      if (options.tool && this.options.onTiming) {
+        try {
+          this.options.onTiming({
+            tool: /^telegram-[a-z-]{1,64}$/.test(options.tool) ? options.tool : "unknown",
+            totalMs: Math.round(performance.now() - started),
+            admissionMs: Math.round(admissionMs),
+            queueMs: Math.round(queueMs),
+            executionMs: executionStarted ? Math.round(performance.now() - executionStarted) : 0,
+            cold,
+            connectionMs,
+            connectionCold,
+            outcome,
+          });
+        } catch {
+          /* Diagnostics must not affect Telegram operations. */
+        }
+      }
+    }
   }
+
   call(userId: string, name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}) {
     return this.request(userId, (generation, id) => ({ kind: "tool", generation, id, name, args }), {
       ...options,
       reserveMedia: name === "telegram-download-media",
+      queue: true,
+      tool: name,
     });
   }
   async prepareLogin(userId: string): Promise<void> {
-    const slot = this.acquire(userId);
-    await this.waitReady(slot);
-    if (slot.state !== "ready" || slot.pending.size) throw new Error("Telegram worker busy");
+    const slot = await this.acquire(userId);
+    try {
+      await this.waitReady(slot);
+      if (slot.state !== "ready" || slot.pending.size || slot.lock.isLocked()) throw new Error("Telegram worker busy");
+    } finally {
+      slot.claims--;
+      this.armIdle(slot);
+    }
   }
   async startLogin(userId: string, attemptId: string, onEvent: (event: LoginEvent) => void): Promise<void> {
     await this.request(userId, (generation, id) => ({ kind: "login-start", generation, id, attemptId }), {

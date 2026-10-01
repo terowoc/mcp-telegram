@@ -34,6 +34,8 @@ function setup(
   options: {
     maxWorkers?: number;
     idleMs?: number;
+    queueWaitMs?: number;
+    onTiming?: ConstructorParameters<typeof WorkerSupervisor>[0]["onTiming"];
     autoReady?: boolean;
     autoExit?: boolean;
     mediaBudget?: { reserve: (userId: string) => () => void };
@@ -363,6 +365,169 @@ test("verified matching legacy reconnect atomically replaces its session and met
     await login;
     assert.equal(s.vault.decrypt(user.id, s.store.getEncryptedSession(user.id)!), "verified-session");
     assert.equal(s.store.getTelegramAccount(user.id)?.id, "111");
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+// A completed account must not monopolize limited process capacity until idle expiry.
+test("idle LRU eviction waits for physical exit before admitting a different account", async () => {
+  const s = setup({ maxWorkers: 1, autoExit: false });
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    s.children[0].reply();
+    await first;
+    const second = s.supervisor.call(s.users[1].id, "telegram-status", {}).catch((error) => error);
+    await tick();
+    await tick();
+    assert.equal(s.children.length, 1);
+    assert.equal(s.supervisor.status(s.users[0].id).state, "stopping");
+    s.children[0].emit("exit", 0);
+    await waitFor(() => s.children[1]?.sent.length === 2);
+    s.children[1].reply();
+    assert.deepEqual(await second, { ok: true });
+  } finally {
+    const closed = s.supervisor.close();
+    s.children.forEach((child) => {
+      child.emit("exit", 0);
+    });
+    await closed;
+    s.store.close();
+  }
+});
+
+test("brief concurrent calls on one account execute FIFO without busy errors", async () => {
+  const s = setup();
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const second = s.supervisor.call(s.users[0].id, "telegram-read-messages", { chatId: "me" }).catch((error) => error);
+    await tick();
+    assert.equal(s.children[0].sent.length, 2);
+    s.children[0].reply(1, { first: true });
+    await first;
+    await waitFor(() => s.children[0].sent.length === 3);
+    s.children[0].reply(2, { second: true });
+    assert.deepEqual(await second, { second: true });
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("cancelled queued call never reaches the Telegram worker", async () => {
+  const s = setup();
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const abort = new AbortController();
+    const second = s.supervisor.call(s.users[0].id, "telegram-status", {}, { signal: abort.signal });
+    const rejected = assert.rejects(second, /cancel|abort/i);
+    await tick();
+    abort.abort();
+    await rejected;
+    s.children[0].reply();
+    await first;
+    await tick();
+    assert.equal(s.children[0].sent.filter((message) => message.kind === "tool").length, 1);
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("queue deadline rejects waiting work without stopping the running operation", async () => {
+  const s = setup({ queueWaitMs: 20 });
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const before = performance.now();
+    await assert.rejects(s.supervisor.call(s.users[0].id, "telegram-status", {}), /queue|busy/i);
+    assert.ok(performance.now() - before >= 15, "short operation is given time to finish");
+    assert.equal(s.supervisor.status(s.users[0].id).state, "ready");
+    assert.equal(s.children[0].sent.length, 2);
+    s.children[0].reply();
+    assert.deepEqual(await first, { ok: true });
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("queued calls stay bounded and a busy account cannot be evicted", async () => {
+  const s = setup({ maxWorkers: 1 });
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const queued = Array.from({ length: 4 }, () =>
+      s.supervisor.call(s.users[0].id, "telegram-status", {}).catch((error) => error),
+    );
+    await tick();
+    await assert.rejects(s.supervisor.call(s.users[0].id, "telegram-status", {}), /queue.*full/i);
+    await assert.rejects(s.supervisor.call(s.users[1].id, "telegram-status", {}), /capacity/i);
+    assert.equal(s.children.length, 1);
+    s.children[0].reply();
+    await first;
+    for (let i = 0; i < queued.length; i++) {
+      await waitFor(() => s.children[0].sent.length === i + 3);
+      s.children[0].reply();
+      assert.deepEqual(await queued[i], { ok: true });
+    }
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("warming slots does not let an idle process expire during a queue handoff", async () => {
+  const s = setup({ idleMs: 1, autoReady: false });
+  try {
+    const first = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await waitFor(() => s.children[0]?.sent.length === 1);
+    const second = s.supervisor.call(s.users[0].id, "telegram-status", {});
+    await tick();
+    s.children[0].emit("message", { kind: "ready", generation: s.children[0].sent[0].generation });
+    await waitFor(() => s.children[0].sent.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(s.supervisor.status(s.users[0].id).state, "ready");
+    s.children[0].reply();
+    await first;
+    await waitFor(() => s.children[0].sent.length === 3);
+    s.children[0].reply();
+    await second;
+    assert.equal(s.children.length, 1);
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("tool timings distinguish connection delay without recording account identity or arguments", async () => {
+  const timings: unknown[] = [];
+  const s = setup({ onTiming: (timing) => timings.push(timing) });
+  try {
+    const call = s.supervisor.call(s.users[0].id, "telegram-read-messages", { chatId: "private-fixture-secret" });
+    await waitFor(() => s.children[0]?.sent.length === 2);
+    const request = s.children[0].sent[1];
+    assert.ok(request.kind === "tool");
+    assert.ok(request.deadlineAt && request.deadlineAt > Date.now());
+    s.children[0].emit("message", {
+      kind: "result",
+      generation: request.generation,
+      id: request.id,
+      result: { ok: true },
+      timing: { connectionMs: 250, connectionCold: true },
+    });
+    await call;
+    assert.equal(timings.length, 1);
+    const timing = timings[0] as Record<string, unknown>;
+    assert.equal(timing.connectionMs, 250);
+    assert.equal(timing.connectionCold, true);
+    assert.equal(timing.tool, "telegram-read-messages");
+    assert.equal(JSON.stringify(timing).includes("private-fixture-secret"), false);
+    assert.equal(JSON.stringify(timing).includes(s.users[0].id), false);
   } finally {
     await s.supervisor.close();
     s.store.close();

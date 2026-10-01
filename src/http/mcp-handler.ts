@@ -2,11 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Request, Response } from "express";
 import { wireIpcProxies } from "../client.js";
-import type { McpServerInternal } from "../ipc-protocol.js";
-import type { TelegramService } from "../telegram-client.js";
-import { applyToolProfile } from "../tool-policy.js";
-import { registerTools } from "../tools/index.js";
 import type { GatewayIdentity } from "./identity.js";
+import { registerHostedTools } from "./tool-catalog.js";
 
 export function createMcpHandler(identity: GatewayIdentity, version: string) {
   return async (req: Request, res: Response) => {
@@ -23,10 +20,10 @@ export function createMcpHandler(identity: GatewayIdentity, version: string) {
         .json({ jsonrpc: "2.0", error: { code: -32600, message: "Request ID exceeds 128 bytes" }, id: null });
       return;
     }
+    const started = performance.now();
     const server = new McpServer({ name: "mcp-telegram", version: version });
-    registerTools(server, {} as TelegramService);
-    const policy = identity.toolPolicy(accountId);
-    applyToolProfile(server as unknown as McpServerInternal, policy);
+    registerHostedTools(server, identity.toolPolicy(accountId));
+    const catalogMs = performance.now() - started;
     wireIpcProxies(server, {
       call: async (name, args, callOptions) => {
         if (!identity.isActive(accountId) || !identity.isGrantValid(accountId, grantId))
@@ -40,6 +37,11 @@ export function createMcpHandler(identity: GatewayIdentity, version: string) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     const send = transport.send.bind(transport);
     transport.send = async (message, sendOptions) => {
+      if (!res.headersSent)
+        res.set(
+          "Server-Timing",
+          `mcp;dur=${(performance.now() - started).toFixed(1)}, catalog;dur=${catalogMs.toFixed(1)}`,
+        );
       if (Buffer.byteLength(JSON.stringify(message)) > 2 * 1048576) {
         if ("id" in message) {
           await send(

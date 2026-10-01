@@ -54,3 +54,28 @@ it("inbox bounds both chat and message aggregation and provides history cursors"
   assert.equal(result.structuredContent.chats[0].messages.length, 3);
   assert.equal(result.structuredContent.chats[0].nextOffsetId, 98);
 });
+
+it("inbox fetches at most three chats concurrently and keeps dialog order", async () => {
+  let active = 0,
+    peak = 0;
+  const tools = executor({
+    ensureConnected: async () => true,
+    getUnreadDialogs: async () =>
+      Array.from({ length: 8 }, (_, i) => ({ id: String(i + 1), name: `Chat ${i + 1}`, unreadCount: 1 })),
+    getMessages: async (id: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      return [{ id: Number(id), text: "fixture" }];
+    },
+  });
+  const result = (await tools.call("telegram-inbox", { limit: 8, messagesPerChat: 1 })) as {
+    structuredContent: { chats: { id: string }[] };
+  };
+  assert.ok(peak > 1 && peak <= 3, `bounded inbox parallelism: ${peak}`);
+  assert.deepEqual(
+    result.structuredContent.chats.map((chat) => chat.id),
+    ["1", "2", "3", "4", "5", "6", "7", "8"],
+  );
+});

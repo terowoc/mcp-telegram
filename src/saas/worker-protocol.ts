@@ -20,7 +20,7 @@ export const workerInitSchema = z.object({
 });
 export const parentMessageSchema = z.discriminatedUnion("kind", [
   workerInitSchema,
-  z.object({ ...base, kind: z.literal("tool"), name: id, args }),
+  z.object({ ...base, kind: z.literal("tool"), name: id, args, deadlineAt: z.number().finite().optional() }),
   z.object({ ...base, kind: z.literal("login-start"), attemptId: id }),
   z.object({ ...base, kind: z.literal("login-password"), attemptId: id, password: z.string().min(1).max(1024) }),
   z.object({ ...base, kind: z.literal("cancel") }),
@@ -48,6 +48,7 @@ export const childMessageSchema = z.discriminatedUnion("kind", [
     result: z.unknown().optional(),
     error: z.string().max(256).optional(),
     settling: z.boolean().optional(),
+    timing: z.object({ connectionMs: z.number().finite().min(0).max(600000), connectionCold: z.boolean() }).optional(),
   }),
   z.object({ ...base, kind: z.literal("settled") }),
   z.object({ ...base, kind: z.literal("event"), attemptId: id, event: loginEventSchema }),

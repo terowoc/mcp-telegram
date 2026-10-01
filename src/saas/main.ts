@@ -28,6 +28,7 @@ export interface SaasConfig {
   version: string;
   maxUsers?: number;
   maxWorkers?: number;
+  workerIdleMs?: number;
   port?: number;
   webRoot?: string;
   allowedOrigins?: string[];
@@ -45,6 +46,12 @@ function validate(config: SaasConfig): SaasConfig {
     throw new Error("Invalid SaaS user capacity");
   if (!Number.isSafeInteger(config.maxWorkers ?? 4) || (config.maxWorkers ?? 4) < 1 || (config.maxWorkers ?? 4) > 32)
     throw new Error("Invalid SaaS worker capacity");
+  if (
+    !Number.isSafeInteger(config.workerIdleMs ?? 1800000) ||
+    (config.workerIdleMs ?? 1800000) < 60000 ||
+    (config.workerIdleMs ?? 1800000) > 3600000
+  )
+    throw new Error("Invalid SaaS worker idle deadline");
   if (!Number.isSafeInteger(config.port ?? 3000) || (config.port ?? 3000) < 1 || (config.port ?? 3000) > 65535)
     throw new Error("Invalid MCP_HTTP_PORT");
   for (const origin of config.allowedOrigins ?? []) {
@@ -74,6 +81,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     apiHash: env.TELEGRAM_API_HASH,
     maxUsers: Number(env.MCP_SAAS_MAX_USERS ?? 100),
     maxWorkers: Number(env.MCP_SAAS_MAX_WORKERS ?? 4),
+    workerIdleMs: Number(env.MCP_SAAS_WORKER_IDLE_MS ?? 1800000),
     port: Number(env.MCP_HTTP_PORT ?? 3000),
     webRoot: env.MCP_WEB_ROOT,
     allowedOrigins: env.MCP_ALLOWED_ORIGINS?.split(",")
@@ -98,7 +106,7 @@ export async function startSaas(
   await mkdir(config.filesRoot, { recursive: true, mode: 0o700 });
   const store = createSaasStore(join(config.authDir, "saas.sqlite"), { maxUsers: config.maxUsers });
   const auth = new SaasAuth(store, { csrfKey: createHmac("sha256", key).update("tg-bridge/saas/csrf/v1").digest() });
-  const budget = new WorkerBudget(config.maxWorkers ?? 4);
+  const budget = new WorkerBudget(config.maxWorkers ?? 4, () => supervisor.evictIdle());
   const supervisor = new WorkerSupervisor({
     budget,
     store,
@@ -107,6 +115,8 @@ export async function startSaas(
     apiHash: config.apiHash,
     filesRoot: config.filesRoot,
     maxWorkers: config.maxWorkers,
+    idleMs: config.workerIdleMs,
+    onTiming: (timing) => console.error(`[mcp-tool] ${JSON.stringify(timing)}`),
     spawn: options.spawn,
   });
   let closing = false;
