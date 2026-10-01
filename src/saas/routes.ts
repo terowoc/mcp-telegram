@@ -319,13 +319,24 @@ export function createSaasRoutes(options: Options): SaasRouter {
     mutation(async (req, res, userId) => {
       const parsed = z.object({ password: z.string().min(1).max(1024) }).safeParse(req.body);
       const user = store.findUser(userId);
+      const session = auth.authenticate(saasCookie(req));
+      const passwordless =
+        !!user &&
+        !user.passwordHash &&
+        req.body?.confirm === true &&
+        !!session &&
+        session.authenticatedAt > Date.now() - 300000;
       if (
-        !parsed.success ||
-        !user ||
-        !user.passwordHash ||
-        !(await verifyPassword(parsed.data.password, user.passwordHash))
+        !passwordless &&
+        (!parsed.success || !user?.passwordHash || !(await verifyPassword(parsed.data.password, user.passwordHash)))
       ) {
-        res.status(403).json({ error: "invalid-credentials" });
+        res
+          .status(403)
+          .json({ error: user && !user.passwordHash ? "reauthentication-required" : "invalid-credentials" });
+        return;
+      }
+      if (!user) {
+        res.sendStatus(403);
         return;
       }
       const current = store.findUser(userId);

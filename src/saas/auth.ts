@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { hashPassword, verifyPassword } from "../http/owner.js";
 import type { SessionVault } from "./session-vault.js";
 import { normalizeLogin, type SaasStore } from "./store.js";
-import type { UserRecord, VerifiedTelegramLogin } from "./types.js";
+import type { TelegramLoginPlan, UserRecord, VerifiedTelegramLogin } from "./types.js";
 
 export const hashOpaqueToken = (token: string): string => createHash("sha256").update(token).digest("hex");
 const opaqueToken = (): string => randomBytes(32).toString("base64url");
@@ -94,7 +94,10 @@ export class SaasAuth {
     );
   }
 
-  completeTelegramLogin(proof: VerifiedTelegramLogin, options: { vault: SessionVault; legacyUserId?: string }) {
+  completeTelegramLogin(
+    proof: VerifiedTelegramLogin,
+    options: { vault: SessionVault; legacyUserId?: string; plan?: TelegramLoginPlan },
+  ) {
     if (
       !proof.session ||
       proof.session.length > 16384 ||
@@ -103,7 +106,7 @@ export class SaasAuth {
       proof.authenticatedAt < Date.now() - 300000
     )
       throw new Error("Invalid Telegram proof");
-    const plan = this.store.planTelegramLogin(proof.account, options.legacyUserId);
+    const plan = options.plan ?? this.store.planTelegramLogin(proof.account, options.legacyUserId);
     const sessionToken = opaqueToken(),
       csrfToken = this.csrf(sessionToken);
     const user = this.store.commitTelegramLogin(plan, {
