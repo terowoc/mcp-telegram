@@ -1,10 +1,21 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #1c2c3a;
+  color: var(--text);
   background: #eef3f6;
   font-synthesis: none;
-  --blue: #248bd1;
-  --muted: #748796;
+  --blue: #1674ad;
+  --accent: #248bd1;
+  --surface: #fff;
+  --surface-soft: #f4f8fb;
+  --text: #1c2c3a;
+  --canvas: #edf4f3;
+  --positive: #28754f;
+  --positive-bg: #eaf8f0;
+  --negative: #b43030;
+  --negative-bg: #fff0f0;
+  --accent-bg: #e9f5ff;
+  color-scheme: light;
+  --muted: #526b7a;
   --line: #e7edf1;
   --radius: 1.2rem;
 }
@@ -74,7 +85,7 @@ p {
 .tag {
   font-size: 0.75rem;
   color: var(--blue);
-  background: #edf7fe;
+  background: var(--accent-bg);
   border-radius: 1rem;
   padding: 0.35rem 0.65rem;
   white-space: nowrap;
@@ -111,15 +122,15 @@ p {
   background: #147dbc;
 }
 .secondary {
-  background: #edf6fc;
+  background: var(--accent-bg);
   color: var(--blue);
 }
 .secondary:hover {
   background: #e1f0fa;
 }
 .danger {
-  background: #fff0f0;
-  color: #d85252;
+  background: var(--negative-bg);
+  color: var(--negative);
 }
 .danger:hover {
   background: #ffe3e3;
@@ -150,10 +161,10 @@ p {
 .field textarea {
   width: 100%;
   padding: 0.95rem 1rem;
-  border: 1px solid #d5dfe6;
+  border: 1px solid var(--line);
   border-radius: 0.7rem;
-  background: white;
-  color: #1c2c3a;
+  background: var(--surface);
+  color: var(--text);
   outline: none;
   resize: vertical;
 }
@@ -179,11 +190,11 @@ p {
   overflow-wrap: anywhere;
 }
 .error {
-  background: #fff0f0;
-  color: #c74343;
+  background: var(--negative-bg);
+  color: var(--negative);
 }
 .code {
-  background: #f5f8fa;
+  background: var(--surface-soft);
   border: 1px solid var(--line);
   border-radius: 0.8rem;
   padding: 1.2rem;
@@ -200,7 +211,7 @@ p {
   min-height: 100dvh;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  background: white;
+  background: var(--surface);
 }
 .authIntro {
   background: linear-gradient(145deg, #258bce, #156ab0);
@@ -307,8 +318,8 @@ p {
   overflow: hidden;
 }
 .sidebar {
-  background: white;
-  border-right: 1px solid #e4ebef;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   padding: 1.7rem 1rem;
@@ -333,7 +344,7 @@ p {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: #def2ff;
+  background: var(--accent-bg);
   color: var(--blue);
   font-weight: 600;
   font-size: 1.3rem;
@@ -377,16 +388,16 @@ p {
   border: 0;
   background: transparent;
   border-radius: 0.75rem;
-  color: #657c8b;
+  color: var(--muted);
   padding: 0.95rem 0.8rem;
   font-size: 0.88rem;
   text-align: left;
 }
 .navItem:hover {
-  background: #f5f8fa;
+  background: var(--surface-soft);
 }
 .navItem.selected {
-  background: #e9f5ff;
+  background: var(--accent-bg);
   color: var(--blue);
   font-weight: 600;
 }
@@ -442,7 +453,7 @@ p {
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
-  background: white;
+  background: var(--surface);
   padding: 1.1rem 2.4rem;
   border-bottom: 1px solid var(--line);
 }
@@ -455,7 +466,7 @@ p {
   height: 2.5rem;
   width: 2.5rem;
   border-radius: 50%;
-  background: #eaf6ff;
+  background: var(--accent-bg);
   display: grid;
   place-items: center;
   color: var(--blue);
@@ -474,17 +485,17 @@ p {
   padding: 0.5rem 0.85rem;
   border-radius: 1.2rem;
   background: #f1f5f7;
-  color: #8194a0;
+  color: var(--muted);
   white-space: nowrap;
 }
 .connected {
-  background: #eaf8f0;
-  color: #39926b;
+  background: var(--positive-bg);
+  color: var(--positive);
 }
 .canvas {
   overflow: auto;
   flex: 1;
-  background-color: #edf4f3;
+  background-color: var(--canvas);
   background-image: radial-gradient(#c9dcd77a 0.7px, transparent 0.7px);
   background-size: 1.4rem 1.4rem;
   padding: 1.8rem 2.5rem 1rem;
@@ -499,7 +510,7 @@ p {
   justify-content: center;
   gap: 1.4rem;
   margin: 0.1rem auto 1.8rem;
-  color: #8b9fa8;
+  color: var(--muted);
   font-size: 0.8rem;
 }
 .steps span {
@@ -523,7 +534,7 @@ p {
   background: #c8d7da;
 }
 .steps .done {
-  color: #39926b;
+  color: var(--positive);
 }
 .done b {
   background: #dbefe5;
@@ -537,8 +548,8 @@ p {
   border-color: #b9dff8;
 }
 .card {
-  background: white;
-  border: 1px solid #e1ebee;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 1.8rem;
   margin-bottom: 1.2rem;
@@ -559,8 +570,8 @@ p {
 }
 .hero {
   text-align: center;
-  background: white;
-  border: 1px solid #e1ebee;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 1.4rem;
   padding: 3.2rem 2.5rem;
   margin-bottom: 1.2rem;
@@ -568,7 +579,7 @@ p {
 .heroIcon {
   display: grid;
   place-items: center;
-  background: #e4f4ff;
+  background: var(--accent-bg);
   color: var(--blue);
   width: 5.5rem;
   height: 5.5rem;
@@ -592,7 +603,7 @@ p {
   flex-wrap: wrap;
   gap: 1rem;
   font-size: 0.78rem;
-  color: #718a96;
+  color: var(--muted);
 }
 .infoGrid {
   display: grid;
@@ -606,7 +617,7 @@ p {
   font-size: 0.87rem;
 }
 .welcomeBubble {
-  background: #e2f5e9;
+  background: var(--positive-bg);
   border: 1px solid #cce9d7;
   border-radius: 1.2rem 1.2rem 0.35rem 1.2rem;
   padding: 1.3rem 1.5rem;
@@ -617,16 +628,16 @@ p {
 }
 .welcomeBubble h2 {
   font-size: 1.08rem;
-  color: #2e7955;
+  color: var(--positive);
 }
 .welcomeBubble p {
   font-size: 0.83rem;
-  color: #5f8f77;
+  color: var(--positive);
   margin-top: 0.3rem;
 }
 .welcomeCheck {
-  background: #c5e9d3;
-  color: #39926b;
+  background: var(--positive-bg);
+  color: var(--positive);
   width: 2.3rem;
   height: 2.3rem;
   border-radius: 50%;
@@ -638,8 +649,8 @@ p {
   display: flex;
   align-items: center;
   gap: 0.8rem;
-  border: 1px solid #d9e6ee;
-  background: #f6fafc;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
   border-radius: 0.8rem;
   padding: 0.6rem 0.6rem 0.6rem 1.2rem;
 }
@@ -669,7 +680,7 @@ p {
 }
 .metadata strong {
   font-size: 0.8rem;
-  color: #415d6e;
+  color: var(--text);
   font-weight: 500;
 }
 .connectSteps {
@@ -689,7 +700,7 @@ p {
   left: 0;
   width: 1.7rem;
   height: 1.7rem;
-  background: #edf6fc;
+  background: var(--accent-bg);
   color: var(--blue);
   border-radius: 50%;
   display: grid;
@@ -737,8 +748,8 @@ p {
   justify-content: center;
   gap: 0.5rem;
   font-size: 0.85rem;
-  color: #39926b;
-  background: #eaf8f0;
+  color: var(--positive);
+  background: var(--positive-bg);
   padding: 0.9rem;
   border-radius: 0.8rem;
   margin: 1.5rem 0;
@@ -808,7 +819,7 @@ p {
   place-items: center;
   flex-shrink: 0;
   border-radius: 0.7rem;
-  background: #eef6ff;
+  background: var(--accent-bg);
   color: var(--blue);
   font-size: 1.5rem;
 }
@@ -859,7 +870,7 @@ p {
   border-color: #f1dddd;
 }
 .dangerCard h3 {
-  color: #d85252;
+  color: var(--negative);
 }
 .recoveryCard .cardIcon {
   font-size: 2rem;
@@ -873,7 +884,7 @@ p {
 .canvasFoot {
   text-align: center;
   font-size: 0.69rem;
-  color: #91a6ab;
+  color: var(--muted);
   padding: 0.8rem 0;
 }
 .loadingRing {
@@ -1157,5 +1168,424 @@ p {
   }
   .steps i {
     width: 0.5rem;
+  }
+}
+
+/* The cabinet uses Telegram's familiar hierarchy, with readable contrast in both themes. */
+:root[data-theme="dark"] {
+  --blue: #72bfff;
+  --accent: #248bd1;
+  --surface: #17212b;
+  --surface-soft: #202e3b;
+  --text: #e9f0f5;
+  --muted: #a3b4c3;
+  --line: #31424f;
+  --canvas: #0e1821;
+  --positive: #85d7aa;
+  --positive-bg: #19382c;
+  --negative: #ffaaaa;
+  --negative-bg: #41262d;
+  --accent-bg: #203b50;
+  color-scheme: dark;
+  background: var(--canvas);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --blue: #72bfff;
+    --accent: #248bd1;
+    --surface: #17212b;
+    --surface-soft: #202e3b;
+    --text: #e9f0f5;
+    --muted: #a3b4c3;
+    --line: #31424f;
+    --canvas: #0e1821;
+    --positive: #85d7aa;
+    --positive-bg: #19382c;
+    --negative: #ffaaaa;
+    --negative-bg: #41262d;
+    --accent-bg: #203b50;
+    color-scheme: dark;
+    background: var(--canvas);
+  }
+}
+body {
+  background: var(--canvas);
+}
+.primary,
+.authMark,
+.telegramAvatar {
+  background: #1674ad;
+  color: #fff;
+}
+.primary:hover {
+  background: #126292;
+}
+.secondary:hover,
+.navItem:hover {
+  background: var(--accent-bg);
+}
+.danger:hover {
+  background: var(--negative-bg);
+  filter: brightness(0.96);
+}
+.connectionPill {
+  background: var(--surface-soft);
+}
+.connectionPill.connected {
+  background: var(--positive-bg);
+}
+.notice {
+  background: var(--accent-bg);
+  color: var(--blue);
+}
+.notice.error {
+  background: var(--negative-bg);
+  color: var(--negative);
+}
+.endpoint code {
+  color: var(--blue);
+}
+.welcomeBubble {
+  border-color: var(--line);
+}
+.done b,
+.current b {
+  background: var(--surface-soft);
+  border-color: var(--line);
+}
+.steps {
+  flex-wrap: wrap;
+}
+.main,
+.sidebar {
+  overscroll-behavior: contain;
+}
+.sidebar {
+  overflow-y: auto;
+}
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.themeButton {
+  font-size: 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.6rem 0.85rem;
+}
+.authPanel {
+  position: relative;
+}
+.authToolbar {
+  align-self: flex-end;
+}
+.authBox {
+  max-width: 26rem;
+}
+.authIntro {
+  background: linear-gradient(155deg, #248bd1, #135c91);
+}
+.inputWrap {
+  position: relative;
+}
+.inputWrap:has(.passwordToggle) input {
+  padding-right: 6.3rem;
+}
+.passwordToggle {
+  position: absolute;
+  right: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 0.4rem;
+  min-height: 2.5rem;
+  background: transparent;
+  color: var(--blue);
+  font-size: 0.8rem;
+  padding: 0.4rem 0.5rem;
+}
+.permissionSummary {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.7rem;
+  padding: 0.8rem 1rem;
+  margin: 1rem 0;
+  background: var(--surface-soft);
+  font-size: 0.8rem;
+}
+.permissionSummary strong,
+.permissionSummary span {
+  display: block;
+}
+.permissionSummary span {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.policyNotice {
+  margin-top: 1rem;
+}
+.choice:has(input:checked) {
+  background: var(--accent-bg);
+  border-color: var(--blue);
+}
+.choice input {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+.configDetails {
+  margin: 0 0 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+  padding: 1.2rem;
+}
+.configDetails summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.configDetails summary span {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 0.5rem;
+  font-size: 0.8rem;
+}
+.configDetails .infoGrid {
+  margin-top: 1rem;
+}
+.configDetails .card {
+  background: var(--surface-soft);
+  margin-bottom: 0;
+  box-shadow: none;
+}
+.skipLink {
+  position: fixed;
+  left: 1rem;
+  top: -5rem;
+  z-index: 10;
+  background: var(--surface);
+  color: var(--blue);
+  padding: 1rem;
+  border: 2px solid var(--blue);
+  border-radius: 0.5rem;
+}
+.skipLink:focus {
+  top: 1rem;
+}
+.button,
+.navItem {
+  min-height: 2.75rem;
+}
+.qrImage {
+  background: #fff;
+  padding: 0.4rem;
+  object-fit: contain;
+}
+@media (max-width: 760px) {
+  .authIntro {
+    padding: 1.5rem;
+  }
+  .authCopy {
+    margin: 1.4rem 0 0.2rem;
+  }
+  .authCopy h1 {
+    max-width: 24rem;
+  }
+  .authPanel {
+    padding: 1rem 1.3rem 2rem;
+    gap: 1.2rem;
+  }
+  .workspace {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+  }
+  .sidebar {
+    padding: 0.8rem 1rem;
+    position: static;
+    overflow: visible;
+  }
+  .userCard {
+    padding: 0;
+  }
+  .navigation {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    padding: 0.4rem 0.3rem calc(0.4rem + env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    overflow: visible;
+    gap: 0.15rem;
+  }
+  .navItem {
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.3rem;
+    padding: 0.45rem 0.1rem;
+    min-width: 0;
+    font-size: 0.68rem;
+    min-height: 3.6rem;
+  }
+  .navIcon {
+    width: auto;
+    font-size: 1.3rem;
+  }
+  .navLabel {
+    font-size: 0;
+  }
+  .navLabel:after {
+    content: attr(data-short);
+    font-size: 0.68rem;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    padding: 0.8rem 1rem;
+  }
+  .topActions {
+    margin-left: auto;
+    gap: 0.45rem;
+  }
+  .themeButton {
+    font-size: 0.7rem;
+    padding: 0.5rem 0.65rem;
+  }
+  .connectionPill {
+    font-size: 0.7rem;
+  }
+  .canvas {
+    padding: 1rem 0.8rem;
+    min-height: calc(100dvh - 12rem);
+  }
+  .endpoint .button {
+    width: 100%;
+    margin: 0;
+  }
+  .cardHeader,
+  .card,
+  .hero {
+    min-width: 0;
+  }
+  .configDetails summary span {
+    display: block;
+    margin: 0.4rem 0 0;
+  }
+  .choice .tag {
+    margin-left: 2rem;
+  }
+}
+@media (max-width: 380px) {
+  .brand .freeBadge {
+    margin-left: 0;
+  }
+  .steps {
+    gap: 0.35rem;
+  }
+  .steps i {
+    width: 0.5rem;
+  }
+  .topTitle h1 {
+    font-size: 0.95rem;
+  }
+}
+
+.outageTitle {
+  font-size: 1.5rem;
+  margin-top: 1.5rem;
+}
+.singleRecovery .notice {
+  margin-top: 1rem;
+}
+
+.authIntro {
+  background: linear-gradient(155deg, #1674ad, #135c91);
+}
+.authCopy .eyebrow,
+.authCopy p,
+.introFoot {
+  color: #fff;
+}
+.freeBadge {
+  background: #115787;
+}
+.qrImage {
+  height: auto;
+  aspect-ratio: 1;
+}
+
+@media (max-width: 760px) {
+  .authCopy h1 {
+    font-size: 1.6rem;
+  }
+  .authCopy h1 br {
+    display: none;
+  }
+  .authCopy p {
+    font-size: 0.88rem;
+  }
+  .authIntro .authCopy {
+    margin-top: 1.1rem;
+  }
+}
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  width: max-content;
+  max-width: calc(100vw - 2rem);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 30px #0002;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 0;
+}
+.toast .link {
+  min-height: 2rem;
+  color: inherit;
+}
+@media (max-width: 760px) {
+  .toast {
+    bottom: calc(5.5rem + env(safe-area-inset-bottom));
+  }
+}
+
+.dangerCard summary {
+  color: var(--negative);
+  font-weight: 600;
+  cursor: pointer;
+}
+.recoveryCodes {
+  font-size: 0.85rem;
+}
+@media (max-width: 760px) {
+  .telegramCard {
+    padding: 1.1rem;
+  }
+  .telegramCard .telegramAvatar {
+    width: 3rem;
+    height: 3rem;
+    font-size: 1.6rem;
+    margin-bottom: 0.8rem;
+  }
+  .telegramCard:has(.qrImage) .telegramAvatar {
+    display: none;
+  }
+  .telegramCard > .muted {
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  .qrBody {
+    margin-top: 1rem;
+  }
+  .qrImage {
+    width: 13.5rem;
   }
 }

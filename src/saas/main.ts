@@ -141,6 +141,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     supervisor,
     publicUrl: config.publicUrl,
     revokeGrants: gateway.revokeGrants,
+    clientName: gateway.clientName,
     oauth: { contexts, continuations },
     purgeUserFiles: (userId) => rm(join(config.filesRoot, userId), { recursive: true, force: true }),
   });

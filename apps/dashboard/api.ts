@@ -8,6 +8,7 @@ export interface Cabinet {
 export interface Client {
   grantId: string;
   clientId: string;
+  name?: string;
   version: number;
 }
 export interface Attempt {
