@@ -1,5 +1,6 @@
 import type { LoginAttempt, McpClient, McpPanelState, McpPolicy, SaasMe } from './types';
 
+import { revokeMcpCabinet, waitForMcpCleanup } from '../../util/mcpLogin';
 import { McpApiError, mcpRequest, type McpRequestOptions } from './api';
 
 const POLL_INTERVAL = 2000;
@@ -52,22 +53,40 @@ export class McpPanelController {
   }
 
   setBrowserAccount(id?: string) {
+    const previous = this.browserAccountId;
     this.browserAccountId = id;
+    if (previous && previous !== id) {
+      const csrfToken = this.state.me?.csrfToken;
+      this.resetState();
+      void revokeMcpCabinet({ csrfToken, request: this.request });
+      return;
+    }
     this.updateState({});
   }
 
   setVisible(isVisible: boolean) {
+    const wasVisible = this.isVisible;
     this.isVisible = isVisible;
     this.stopPolling();
-    if (isVisible) this.schedulePoll();
+    if (isVisible && !wasVisible && this.isOpen) {
+      this.resetState();
+      void this.refresh().then(() => this.schedulePoll());
+    } else if (isVisible) this.schedulePoll();
   }
 
   async refresh() {
     if (!this.isOpen) return;
+    const cleanup = waitForMcpCleanup();
+    if (cleanup) await cleanup;
     let epoch = this.epoch;
     try {
       const me = await this.perform<SaasMe>('/api/saas/me', {}, epoch);
       if (!me || !this.isCurrent(epoch)) return;
+      if (this.browserAccountId && me.telegram.account && me.telegram.account.id !== this.browserAccountId) {
+        await this.perform('/api/saas/logout', { method: 'POST', csrfToken: me.csrfToken }, epoch);
+        if (this.isCurrent(epoch)) this.resetState();
+        return;
+      }
       if (this.state.me && this.state.me.user.id !== me.user.id) {
         this.resetState();
         epoch = this.epoch;
@@ -192,9 +211,13 @@ export class McpPanelController {
     });
   }
 
-  async deleteAccount(password: string) {
+  async deleteAccount(password?: string) {
     await this.mutate(async (epoch) => {
-      await this.perform('/api/saas/account', this.createMutation('DELETE', { password }), epoch);
+      await this.perform(
+        '/api/saas/account',
+        this.createMutation('DELETE', password === undefined ? { confirm: true } : { password }),
+        epoch,
+      );
       if (this.isCurrent(epoch)) this.resetState();
     });
   }

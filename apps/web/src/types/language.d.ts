@@ -2512,6 +2512,18 @@ export interface LangPair {
   'McpUnknownIdentity': undefined;
   'McpLoading': undefined;
   'McpRecovered': undefined;
+  'McpAlsoConnect': undefined;
+  'McpPersistentAccess': undefined;
+  'McpUnifiedTitle': undefined;
+  'McpConnectCurrent': undefined;
+  'McpManualQr': undefined;
+  'McpBridgeWaiting': undefined;
+  'McpBridgeFailed': undefined;
+  'McpLegacyLinkRequired': undefined;
+  'McpLegacyPasswordNote': undefined;
+  'McpLegacyEntry': undefined;
+  'McpContinuationExpired': undefined;
+  'McpReauthenticate': undefined;
 }
 
 export interface LangPairWithVariables<V = LangVariable> {

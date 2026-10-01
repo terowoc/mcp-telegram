@@ -5,12 +5,18 @@ import { isAbsolute, join } from "node:path";
 import express from "express";
 import { createHttpGateway } from "../http/gateway.js";
 import { SaasAuth } from "./auth.js";
+import { BootstrapContexts } from "./bootstrap-contexts.js";
 import { createSaasIdentity } from "./identity.js";
+import { OAuthContinuations } from "./oauth-continuations.js";
 import { createSaasRoutes } from "./routes.js";
 import { loadVaultKey, SessionVault } from "./session-vault.js";
 import { mountSaasFrontend } from "./static.js";
 import { createSaasStore } from "./store.js";
 import { WorkerSupervisor } from "./supervisor.js";
+import { TelegramAuthAttempts } from "./telegram-auth-attempts.js";
+import { TelegramAuthWorker } from "./telegram-auth-protocol.js";
+import { createTelegramAuthRoutes } from "./telegram-auth-routes.js";
+import { WorkerBudget } from "./worker-budget.js";
 
 export interface SaasConfig {
   publicUrl: string;
@@ -76,7 +82,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     version: env.npm_package_version ?? "1.43.1",
   });
 }
-export async function startSaas(config: SaasConfig, options: { spawn?: typeof fork } = {}) {
+export async function startSaas(
+  config: SaasConfig,
+  options: { spawn?: typeof fork; bootstrapSpawn?: typeof fork } = {},
+) {
   validate(config);
   const csp = config.webRoot
     ? (await readFile(join(config.webRoot, "index.html"), "utf8")).match(
@@ -89,7 +98,9 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   await mkdir(config.filesRoot, { recursive: true, mode: 0o700 });
   const store = createSaasStore(join(config.authDir, "saas.sqlite"), { maxUsers: config.maxUsers });
   const auth = new SaasAuth(store, { csrfKey: createHmac("sha256", key).update("tg-bridge/saas/csrf/v1").digest() });
+  const budget = new WorkerBudget(config.maxWorkers ?? 4);
   const supervisor = new WorkerSupervisor({
+    budget,
     store,
     vault,
     apiId: config.apiId,
@@ -99,6 +110,17 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     spawn: options.spawn,
   });
   let closing = false;
+  const contexts = new BootstrapContexts({
+    csrfKey: createHmac("sha256", key).update("tg-bridge/bootstrap/csrf/v1").digest(),
+  });
+  const continuations = new OAuthContinuations();
+  const loginAttempts = new TelegramAuthAttempts({
+    auth,
+    store,
+    vault,
+    createWorker: () =>
+      new TelegramAuthWorker({ budget, apiId: config.apiId, apiHash: config.apiHash, spawn: options.bootstrapSpawn }),
+  });
   let gateway: Awaited<ReturnType<typeof createHttpGateway>>;
   try {
     gateway = await createHttpGateway({
@@ -106,6 +128,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
       storageDir: join(config.authDir, "oauth"),
       version: config.version,
       identity: createSaasIdentity(store, auth, supervisor),
+      unifiedLogin: { contexts, continuations },
       isHealthy: () => !closing,
       trustProxy: 1,
       allowedOrigins: config.allowedOrigins,
@@ -123,6 +146,17 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     revokeGrants: gateway.revokeGrants,
     purgeUserFiles: (userId) => rm(join(config.filesRoot, userId), { recursive: true, force: true }),
   });
+  const telegramAuthRoutes = createTelegramAuthRoutes({
+    auth,
+    store,
+    vault,
+    attempts: loginAttempts,
+    contexts,
+    continuations,
+    publicUrl: config.publicUrl,
+    revokeGrants: gateway.revokeGrants,
+  });
+  gateway.app.use("/api/saas/telegram-auth", telegramAuthRoutes);
   gateway.app.use("/api/saas", routes);
   const app = express();
   app.disable("x-powered-by");
@@ -142,6 +176,9 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     const workers = supervisor.close(); // forbid admission before draining browser attempts
     closePromise = (async () => {
       try {
+        await telegramAuthRoutes.close();
+        contexts.close();
+        continuations.close();
         await routes.close();
       } finally {
         await workers;

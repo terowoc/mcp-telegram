@@ -7,6 +7,7 @@ import type { AccountInfo, CustomPeer } from '../../../types';
 import { temporarilySuspendCacheUpdate } from '../../../global/cache';
 import { getCurrentMaxAccountCount, getCurrentProdAccountCount } from '../../../global/helpers';
 import { IS_SAFARI } from '../../../util/browser/windowEnvironment';
+import { clearMcpLogin } from '../../../util/mcpLogin';
 import { getAccountSlotUrl } from '../../../util/multiaccount';
 import { REM } from '../../common/helpers/mediaDimensions';
 
@@ -45,17 +46,22 @@ const AccountMenuItems = ({
 
   const shouldShowLimit = currentCount >= maxCount;
 
-  const handleAccountClick = useLastCallback((account: AccountInfo) => {
+  const handleAccountClick = useLastCallback(async (
+    account: AccountInfo, slot: number, e: React.SyntheticEvent<HTMLDivElement | HTMLAnchorElement>,
+  ) => {
     if (account.userId === currentUser.id) {
       onSelectCurrent?.();
       return;
     }
 
+    e.preventDefault();
+    await clearMcpLogin();
     // IDB locks up if we write large payload on navigation
     if (IS_SAFARI) temporarilySuspendCacheUpdate();
+    window.location.assign(getAccountSlotUrl(slot));
   });
 
-  const handleNewAccountClick = useLastCallback(() => {
+  const handleNewAccountClick = useLastCallback(async (e: React.SyntheticEvent<HTMLDivElement | HTMLAnchorElement>) => {
     if (shouldShowLimit) {
       showNotification({
         title: lang('PremiumLimitAccountsTitle'),
@@ -65,7 +71,11 @@ const AccountMenuItems = ({
       return;
     }
 
+    e.preventDefault();
+    if (!newAccountUrl) return;
+    await clearMcpLogin();
     if (IS_SAFARI) temporarilySuspendCacheUpdate();
+    window.location.assign(newAccountUrl);
   });
 
   const newAccountUrl = useMemo(() => {
@@ -113,7 +123,7 @@ const AccountMenuItems = ({
                     previewUrl={account.avatarUri}
                   />
                 )}
-                onClick={() => handleAccountClick(account)}
+                onClick={(e) => handleAccountClick(account, Number(slot), e)}
                 href={account.userId !== currentUser.id ? getAccountSlotUrl(Number(slot)) : undefined}
               >
                 {account.isTest && <span className="account-menu-item-test">T</span>}

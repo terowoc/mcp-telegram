@@ -119,17 +119,21 @@ describe('ephemeral MCP panel lifecycle', () => {
     expect(controller.getState().me).toBeUndefined();
     expect(controller.getState().attempt).toBeUndefined();
   });
-  it('account switching preserves SaaS identity and warns on a Telegram mismatch', async () => {
+  it('account switching clears former cabinet and revokes its browser cookie', async () => {
     const request = vi.fn((path) => Promise.resolve(path.endsWith('/me') ? ME : { clients: [] }));
     const controller = new McpPanelController({ request });
     controller.setBrowserAccount('111');
     await controller.show();
     expect(controller.getState().hasMismatch).toBe(false);
     controller.setBrowserAccount('222');
-    expect(controller.getState().me?.user.id).toBe('saas-A');
-    expect(controller.getState().hasMismatch).toBe(true);
+    expect(controller.getState().me).toBeUndefined();
+    expect(controller.getState().hasMismatch).toBe(false);
+    await flush();
+    expect(request).toHaveBeenCalledWith('/api/saas/logout', { method: 'POST', csrfToken: ME.csrfToken });
     expect(
-      request.mock.calls.every(([path]) => path === '/api/saas/me' || path === '/api/saas/clients'),
+      request.mock.calls.every(([path]) => [
+        '/api/saas/me', '/api/saas/clients', '/api/saas/logout',
+      ].includes(path)),
     ).toBe(true);
     controller.hide();
   });
@@ -178,6 +182,30 @@ describe('ephemeral MCP panel lifecycle', () => {
     expect(controller.getState().me).toBeUndefined();
     expect(controller.getState().attempt).toBeUndefined();
     expect(controller.getState().isSignedOut).toBe(true);
+    controller.hide();
+  });
+});
+
+describe('returning to an old tab', () => {
+  it('clears cached cabinet state and revalidates its cookie before resuming', async () => {
+    let active = true;
+    const request = vi.fn(async (path) => {
+      await Promise.resolve();
+      if (path.endsWith('/me')) {
+        if (!active) throw new McpApiError(401, 'authentication-required');
+        return ME;
+      }
+      return { clients: [] };
+    });
+    const controller = new McpPanelController({ request });
+    await controller.show();
+    controller.setVisible(false);
+    active = false;
+    controller.setVisible(true);
+    expect(controller.getState().me).toBeUndefined();
+    await flush();
+    expect(controller.getState().isSignedOut).toBe(true);
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/me'))).toHaveLength(2);
     controller.hide();
   });
 });

@@ -1,0 +1,420 @@
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import type { AddressInfo } from "node:net";
+import { test } from "node:test";
+import express from "express";
+import { hashOpaqueToken, SaasAuth } from "../saas/auth.js";
+import { BootstrapContexts } from "../saas/bootstrap-contexts.js";
+import { OAuthContinuations } from "../saas/oauth-continuations.js";
+import { createSaasRoutes } from "../saas/routes.js";
+import { SessionVault } from "../saas/session-vault.js";
+import { createSaasStore } from "../saas/store.js";
+import { TelegramAuthAttempts } from "../saas/telegram-auth-attempts.js";
+import type { TelegramAuthEvent } from "../saas/telegram-auth-protocol.js";
+import { createTelegramAuthRoutes } from "../saas/telegram-auth-routes.js";
+import { CapacityError } from "../saas/worker-budget.js";
+
+const origin = "https://mcp.example.test";
+async function setup(revoke: (ids: string[]) => Promise<void> = async () => {}) {
+  const store = createSaasStore(":memory:"),
+    auth = new SaasAuth(store, { csrfKey: randomBytes(32) }),
+    vault = new SessionVault(randomBytes(32));
+  const continuations = new OAuthContinuations();
+  const contexts = new BootstrapContexts({ csrfKey: randomBytes(32) });
+  let full = false,
+    started = 0;
+  let dispose = async () => {};
+  const callbacks = new Map<string, (e: TelegramAuthEvent) => void>();
+  const attempts = new TelegramAuthAttempts({
+    auth,
+    store,
+    vault,
+    createWorker: () => ({
+      start: async (id: string, event: (e: TelegramAuthEvent) => void) => {
+        if (full) throw new CapacityError();
+        started++;
+        callbacks.set(id, event);
+        event({ type: "token", token: "AQID", expiresAt: Date.now() + 30000 });
+      },
+      submitPassword: () => {},
+      dispose: () => dispose(),
+    }),
+  });
+  const router = createTelegramAuthRoutes({
+    auth,
+    store,
+    vault,
+    attempts,
+    contexts,
+    continuations,
+    publicUrl: origin,
+    revokeGrants: revoke,
+  });
+  const saas = createSaasRoutes({
+    auth,
+    store,
+    publicUrl: origin,
+    revokeGrants: async () => {},
+    supervisor: {
+      prepareLogin: async () => {},
+      startLogin: async () => {},
+      submitPassword: () => {},
+      cancelLogin: async () => {},
+      stopUser: async () => {},
+      status: () => ({ state: "stopped", busy: false, sessionPresent: false }),
+    },
+  });
+  const app = express();
+  app.set("trust proxy", 1);
+  app.use("/api/saas/telegram-auth", router);
+  app.use("/api/saas", saas);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/saas`;
+  function jar(ip = "192.0.2.1") {
+    const cookies = new Map<string, string>();
+    let csrf = "";
+    async function request(path: string, method = "GET", body?: unknown, headers: Record<string, string> = {}) {
+      const res = await fetch(base + path, {
+        method,
+        headers: {
+          origin,
+          "content-type": "application/json",
+          "x-forwarded-for": ip,
+          cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; "),
+          "x-csrf-token": csrf,
+          ...headers,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      for (const cookie of res.headers.getSetCookie()) {
+        const pair = cookie.split(";", 1)[0],
+          pos = pair.indexOf("=");
+        cookies.set(pair.slice(0, pos), pair.slice(pos + 1));
+      }
+      return res;
+    }
+    return {
+      request,
+      context: async () => {
+        const res = await request("/telegram-auth/start", "POST", {});
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        csrf = body.csrfToken;
+        return res;
+      },
+      start: async (continuation?: string) => {
+        const res = await request("/telegram-auth/start", "POST", { continuation });
+        return { res, body: await res.json() };
+      },
+      legacy: async (login: string, password: string) => {
+        const res = await request("/login", "POST", { login, password });
+        assert.equal(res.status, 200);
+      },
+      setCsrf: (value: string) => {
+        csrf = value;
+      },
+    };
+  }
+  return {
+    store,
+    auth,
+    vault,
+    attempts,
+    continuations,
+    jar,
+    started: () => started,
+    setDispose: (value: () => Promise<void>) => {
+      dispose = value;
+    },
+    setFull: () => {
+      full = true;
+    },
+    verify: (id: string, accountId = "12345") =>
+      callbacks.get(id)?.({
+        type: "verified",
+        proof: { attemptId: id, account: { id: accountId }, session: "server-secret", authenticatedAt: Date.now() },
+      }),
+    close: async () => {
+      await router.close();
+      await saas.close();
+      contexts.close();
+      continuations.close();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      store.close();
+    },
+  };
+}
+
+test("continuation redirects only owner to a registered interaction", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar(),
+      context = await jar.context();
+    const token = context.headers.getSetCookie()[0].split(";", 1)[0].split("=")[1];
+    const handle = f.continuations.create({
+      interactionUid: "validated_uid",
+      clientId: "client",
+      contextHash: hashOpaqueToken(token),
+      expiresAt: Date.now() + 10000,
+      requireFreshAuthentication: false,
+    });
+    const other = f.jar("192.0.2.2");
+    await other.context();
+    assert.equal((await other.start(handle)).res.status, 409);
+    const { res, body } = await jar.start(handle);
+    assert.equal(res.status, 201);
+    f.verify(body.id);
+    const complete = await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+      returnTo: "https://evil.example",
+    });
+    assert.equal(complete.status, 200);
+    assert.equal((await complete.json()).continueTo, "/interaction/validated_uid");
+    assert.equal(f.continuations.consume(handle, hashOpaqueToken(token)), undefined);
+  } finally {
+    await f.close();
+  }
+});
+test("initial_context_does_not_spawn and wrong origin cannot start", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar(),
+      res = await jar.context();
+    assert.equal(f.started(), 0);
+    assert.match(res.headers.get("set-cookie") ?? "", /HttpOnly/);
+    assert.equal(
+      (await jar.request("/telegram-auth/start", "POST", {}, { origin: "https://evil.example" })).status,
+      403,
+    );
+    const { res: started, body } = await jar.start();
+    assert.equal(started.status, 201);
+    assert.equal(body.state, "token");
+    assert.equal((await f.jar().request(`/telegram-auth/${body.id}`)).status, 401);
+    const other = f.jar();
+    await other.context();
+    assert.equal((await other.request(`/telegram-auth/${body.id}`)).status, 404);
+    assert.equal(JSON.stringify(body).includes("server-secret"), false);
+  } finally {
+    await f.close();
+  }
+});
+test("verified completion issues one secure cabinet cookie and denies replay", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar();
+    await jar.context();
+    const { body } = await jar.start();
+    assert.equal((await jar.request(`/telegram-auth/${body.id}/complete`, "POST", { id: "victim" })).status, 409);
+    f.verify(body.id);
+    const res = await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {});
+    assert.equal(res.status, 200);
+    const signed = await res.json();
+    jar.setCsrf(signed.csrfToken);
+    assert.match(res.headers.get("set-cookie") ?? "", /__Host-mcp-saas/);
+    const me = await (await jar.request("/me")).json();
+    assert.equal(me.user.hasPassword, false);
+    assert.equal(me.telegram.sessionPresent, false);
+    assert.equal(f.store.getTelegramAccount(me.user.id)?.id, "12345");
+    assert.equal((await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {})).status, 401);
+  } finally {
+    await f.close();
+  }
+});
+test("legacy_link_checks_cookie_fresh_password_and_server_id", async () => {
+  const f = await setup();
+  try {
+    const old = await f.auth.register("alice", "a long private legacy password");
+    f.store.putEncryptedSession(old.userId, f.vault.encrypt(old.userId, "old"));
+    f.store.putTelegramAccount(old.userId, { id: "12345" });
+    const jar = f.jar();
+    await jar.legacy("alice", "a long private legacy password");
+    await jar.context();
+    const result = await jar.start();
+    f.verify(result.body.id);
+    assert.equal(
+      (await jar.request(`/telegram-auth/${result.body.id}/complete`, "POST", { legacyPassword: "wrong" })).status,
+      403,
+    );
+    assert.equal(f.store.findByTelegramId("12345"), undefined);
+    assert.equal(
+      (
+        await jar.request(`/telegram-auth/${result.body.id}/complete`, "POST", {
+          legacyPassword: "a long private legacy password",
+        })
+      ).status,
+      200,
+    );
+    assert.equal(f.store.findByTelegramId("12345")?.id, old.userId);
+  } finally {
+    await f.close();
+  }
+});
+test("start_limits_and_shared_capacity_return_retry", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar();
+    await jar.context();
+    f.setFull();
+    const { res } = await jar.start();
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get("retry-after"), "30");
+  } finally {
+    await f.close();
+  }
+});
+test("actual start limits do not count context issuance", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar();
+    await jar.context();
+    for (let i = 0; i < 5; i++) {
+      const { res, body } = await jar.start();
+      assert.equal(res.status, 201);
+      assert.equal((await jar.request(`/telegram-auth/${body.id}`, "DELETE")).status, 204);
+    }
+    assert.equal((await jar.start()).res.status, 429);
+  } finally {
+    await f.close();
+  }
+});
+test("passwordless deletion requires fresh server authentication and explicit confirmation", async () => {
+  const f = await setup();
+  try {
+    const jar = f.jar();
+    await jar.context();
+    const { body } = await jar.start();
+    f.verify(body.id);
+    const signed = await (await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {})).json();
+    jar.setCsrf(signed.csrfToken);
+    assert.equal((await jar.request("/account", "DELETE", {})).status, 403);
+    assert.equal((await jar.request("/account", "DELETE", { confirm: true })).status, 204);
+    assert.equal(f.store.findByTelegramId("12345"), undefined);
+  } finally {
+    await f.close();
+  }
+});
+
+test("revoking bootstrap context cancels all former-tab attempts and rejects their completion", async () => {
+  const s = await setup();
+  try {
+    const owner = s.jar();
+    await owner.context();
+    const { body } = await owner.start();
+    s.verify(body.id);
+    assert.equal((await owner.request("/telegram-auth/revoke", "POST", {})).status, 204);
+    assert.equal((await owner.request(`/telegram-auth/${body.id}/complete`, "POST", {})).status, 401);
+    assert.equal((await owner.start()).res.status, 403);
+    assert.equal(s.store.findByTelegramId("12345"), undefined);
+  } finally {
+    await s.close();
+  }
+});
+test("bootstrap revocation fences a completion already awaiting worker exit", async () => {
+  const s = await setup();
+  let release: () => void, entered: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const disposing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  s.setDispose(async () => {
+    entered();
+    await waiting;
+  });
+  try {
+    const owner = s.jar();
+    await owner.context();
+    const { body } = await owner.start();
+    s.verify(body.id);
+    const completion = owner.request(`/telegram-auth/${body.id}/complete`, "POST", {});
+    await disposing;
+    const revocation = owner.request("/telegram-auth/revoke", "POST", {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(release);
+    release();
+    assert.equal((await revocation).status, 204);
+    const response = await completion;
+    assert.equal(response.status, 409);
+    assert.equal(response.headers.get("set-cookie"), null);
+    assert.equal(s.store.findByTelegramId("12345"), undefined);
+  } finally {
+    assert.ok(release);
+    release();
+    await s.close();
+  }
+});
+
+test("revocation during provider cleanup does not issue or retain a cabinet session", async () => {
+  let release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>((r) => {
+    release = r;
+  });
+  const entering = new Promise<void>((r) => {
+    entered = r;
+  });
+  const s = await setup(async () => {
+    entered();
+    await waiting;
+  });
+  try {
+    const old = await s.auth.register("alice", "a long private legacy password");
+    s.store.putEncryptedSession(old.userId, s.vault.encrypt(old.userId, "synthetic"));
+    s.store.putTelegramAccount(old.userId, { id: "12345" });
+    s.store.bindGrant(old.userId, "test-grant", "test-client", 1);
+    const jar = s.jar();
+    await jar.legacy("alice", "a long private legacy password");
+    await jar.context();
+    const { body } = await jar.start();
+    s.verify(body.id);
+    const completing = jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+      legacyPassword: "a long private legacy password",
+    });
+    await entering;
+    assert.equal((await jar.request("/telegram-auth/revoke", "POST", {})).status, 204);
+    release();
+    const result = await completing;
+    assert.equal(result.status, 401);
+    assert.equal(
+      result.headers.getSetCookie().some((c) => c.startsWith("__Host-mcp-saas=")),
+      false,
+    );
+    assert.equal((await jar.request("/me")).status, 401);
+  } finally {
+    release();
+    await s.close();
+  }
+});
+
+test("repeat login to a linked legacy cabinet preserves provider and store grants", async () => {
+  const revoked: string[] = [];
+  const s = await setup(async (ids) => {
+    revoked.push(...ids);
+  });
+  try {
+    const old = await s.auth.register("alice", "a long private legacy password");
+    s.auth.completeTelegramLogin(
+      { attemptId: "link", account: { id: "12345" }, session: "synthetic", authenticatedAt: Date.now() },
+      { vault: s.vault, legacyUserId: old.userId },
+    );
+    s.store.bindGrant(old.userId, "existing-client-grant", "client", 1);
+    const jar = s.jar();
+    await jar.legacy("alice", "a long private legacy password");
+    await jar.context();
+    const { body } = await jar.start();
+    s.verify(body.id);
+    assert.equal(
+      (
+        await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+          legacyPassword: "a long private legacy password",
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(revoked, []);
+    assert.ok(s.store.findGrant("existing-client-grant"));
+  } finally {
+    await s.close();
+  }
+});

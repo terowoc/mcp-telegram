@@ -1,7 +1,7 @@
 export type McpPolicy = { profile: 'read' | 'full'; chatIds: string[]; version: number };
 export type TelegramAccount = { id: string; username?: string };
 export type SaasMe = {
-  user: { id: string; login: string };
+  user: { id: string; login: string; hasPassword?: boolean };
   csrfToken: string;
   policy: McpPolicy;
   telegram: {
@@ -32,4 +32,21 @@ export type McpPanelState = {
   isSignedOut: boolean;
   hasMismatch: boolean;
   isRecovered?: boolean;
+};
+
+export type UnifiedLoginAttempt = {
+  id: string;
+  state: 'connecting' | 'token' | 'needs-password' | 'verified' | 'completing' | 'success'
+    | 'cancelled' | 'expired' | 'error';
+  expiresAt: number;
+  token?: string;
+  tokenExpiresAt?: number;
+  code?: string;
+};
+export type UnifiedLoginState = {
+  attempt?: UnifiedLoginAttempt;
+  error?: PanelError;
+  isBusy: boolean;
+  isManual: boolean;
+  requiresLegacy?: boolean;
 };

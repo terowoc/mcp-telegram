@@ -7,7 +7,7 @@ export {
 
 export {
   provideAuthPhoneNumber, provideAuthCode, provideAuthPassword, provideAuthRegistration, restartAuth, restartAuthWithQr,
-  restartAuthWithPasskey,
+  restartAuthWithPasskey, acceptMcpLoginToken,
 } from './auth';
 
 export {

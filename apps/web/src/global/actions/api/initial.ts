@@ -17,6 +17,7 @@ import {
 } from '../../../util/browser/windowEnvironment';
 import * as cacheApi from '../../../util/cacheApi';
 import { getCurrentTabId } from '../../../util/establishMultitabRole';
+import { clearMcpLogin } from '../../../util/mcpLogin';
 import {
   ACCOUNT_SLOT, getAccountsInfo, getAccountSlotUrl, getFirstLoggedInAccountSlot,
 } from '../../../util/multiaccount';
@@ -236,6 +237,7 @@ addActionHandler('saveSession', async (global, actions, payload): Promise<void> 
 });
 
 addActionHandler('signOut', async (global, actions, payload): Promise<void> => {
+  await clearMcpLogin();
   if ('hangUp' in actions) actions.hangUp({ tabId: getCurrentTabId() });
   if ('leaveGroupCall' in actions) actions.leaveGroupCall({ tabId: getCurrentTabId() });
 
@@ -372,6 +374,7 @@ addActionHandler('deleteDeviceToken', (global): ActionReturnType => {
 });
 
 addActionHandler('signOutAllAccounts', async (): Promise<void> => {
+  await clearMcpLogin();
   try {
     await Promise.race([unsubscribe(), pause(API_DESTROY_TIMEOUT_MS)]);
     await Promise.race([callApi('destroy'), pause(API_DESTROY_TIMEOUT_MS)]);

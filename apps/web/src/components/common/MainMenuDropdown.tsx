@@ -1,4 +1,4 @@
-import { type FC, memo } from '@teact';
+import { type FC, memo, useEffect, useState } from '@teact';
 import { APP_REVISION } from 'virtual:git-info';
 import { getActions, withGlobal } from '../../global';
 
@@ -7,6 +7,7 @@ import { LeftColumnContent, SettingsScreens } from '../../types';
 import { APP_NAME, DEBUG, IS_BETA } from '../../config';
 import { requestMutation } from '../../lib/fasterdom/fasterdom';
 import buildClassName from '../../util/buildClassName';
+import { consumeMcpLoginEntry } from '../../util/mcpLogin';
 
 import useFlag from '../../hooks/useFlag';
 import useLang from '../../hooks/useLang';
@@ -35,6 +36,15 @@ const LeftSideMenuDropdown = ({
   const [isBotMenuOpen, markBotMenuOpen, unmarkBotMenuOpen] = useFlag();
   const [isMcpOpen, openMcp, closeMcp] = useFlag();
   const lang = useLang();
+  const [shouldStartMcp, setShouldStartMcp] = useState(false);
+  useEffect(() => {
+    if (!browserTelegramId) return;
+    const entry = consumeMcpLoginEntry();
+    if (entry) {
+      setShouldStartMcp(entry.shouldStart);
+      openMcp();
+    }
+  }, [browserTelegramId, openMcp]);
 
   const versionString = IS_BETA
     ? `${APP_VERSION} Beta (${APP_REVISION})`
@@ -96,7 +106,15 @@ const LeftSideMenuDropdown = ({
           onSelectMcp={handleSelectMcp}
         />
       </DropdownMenu>
-      <McpPanelAsync isOpen={isMcpOpen} browserTelegramId={browserTelegramId} onClose={closeMcp} />
+      <McpPanelAsync
+        isOpen={isMcpOpen}
+        browserTelegramId={browserTelegramId}
+        shouldStart={shouldStartMcp}
+        onClose={() => {
+          setShouldStartMcp(false);
+          closeMcp();
+        }}
+      />
     </>
   );
 };

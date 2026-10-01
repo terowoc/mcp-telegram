@@ -18,6 +18,7 @@
     "auth.cancelCode",
     "auth.dropTempAuthKeys",
     "auth.exportLoginToken",
+    "auth.acceptLoginToken",
     "auth.importLoginToken",
     "auth.initPasskeyLogin",
     "auth.finishPasskeyLogin",
