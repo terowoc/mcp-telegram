@@ -35,6 +35,7 @@ interface Options {
   supervisor: LoginSupervisor;
   publicUrl: string;
   revokeGrants: (ids: string[]) => Promise<void>;
+  clientName?: (id: string) => Promise<string | undefined>;
   attempts?: LoginAttempts;
   oauth?: { contexts: BootstrapContexts; continuations: OAuthContinuations };
   purgeUserFiles?: (userId: string) => Promise<void>;
@@ -344,13 +345,23 @@ export function createSaasRoutes(options: Options): SaasRouter {
       res.sendStatus(204);
     }),
   );
-  router.get("/clients", (_req, res) =>
-    res.json({
-      clients: store
-        .listGrants(res.locals.saas.userId)
-        .map((g) => ({ grantId: g.grantId, clientId: g.clientId, version: g.version })),
-    }),
-  );
+  router.get("/clients", async (_req, res) => {
+    const userId = res.locals.saas.userId as string;
+    const clients = await Promise.all(
+      store.listGrants(userId).map(async (g) => {
+        const name = await options.clientName?.(g.clientId).catch(() => undefined);
+        return {
+          grantId: g.grantId,
+          clientId: g.clientId,
+          version: g.version,
+          ...(name ? { name: name.slice(0, 160) } : {}),
+        };
+      }),
+    );
+    // A revocation during optional metadata lookup must not return an obsolete connection.
+    const active = new Set(store.listGrants(userId).map((g) => g.grantId));
+    res.json({ clients: clients.filter((client) => active.has(client.grantId)) });
+  });
   router.delete(
     "/clients/:grantId",
     mutation(async (req, res, userId) => {

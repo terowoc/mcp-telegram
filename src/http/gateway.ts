@@ -8,6 +8,7 @@ import type { OAuthContinuations } from "../saas/oauth-continuations.js";
 import { type GatewayIdentity, ownerIdentity } from "./identity.js";
 import { createMcpHandler } from "./mcp-handler.js";
 import { loadOrCreateSecrets } from "./owner.js";
+import { connectionUi } from "./pages.js";
 import { createAdapter } from "./storage.js";
 
 export interface GatewayOptions {
@@ -68,6 +69,13 @@ export async function createHttpGateway(options: GatewayOptions) {
   }
   const config: Configuration = {
     adapter: Adapter,
+    renderError: async (ctx) => {
+      ctx.type = "html";
+      ctx.body = connectionUi(ctx.headers.cookie).error(
+        "Не удалось подключить клиент",
+        "Запрос подключения отклонён или ссылка устарела. Вернитесь в кабинет и начните подключение заново.",
+      );
+    },
     jwks: secrets.jwks,
     cookies: {
       keys: secrets.cookieKeys,
@@ -174,11 +182,15 @@ export async function createHttpGateway(options: GatewayOptions) {
       .json({ status: options.isHealthy?.() === false ? "unavailable" : "ok" }),
   );
   if (identity.kind === "owner")
-    app.get("/", (_req, res) =>
+    app.get("/", (req, res) =>
       res
         .type("html")
         .send(
-          "<!doctype html><title>Telegram MCP</title><h1>Telegram MCP</h1><p>Connect your MCP client to /mcp. Access requires owner approval.</p>",
+          connectionUi(req.headers.cookie).page(
+            "Подключить Telegram MCP",
+            "Добавьте адрес сервера в настройках MCP своего AI-клиента и подтвердите доступ.",
+            `<div class="access"><span class="accessLabel">MCP endpoint</span><strong>${escapeHtml(resource)}</strong></div><p class="help">Авторизация через OAuth. Каждый клиент подключается с разрешения владельца.</p>`,
+          ),
         ),
     );
   app.get(["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"], (_req, res) =>
@@ -240,7 +252,12 @@ export async function createHttpGateway(options: GatewayOptions) {
   app.get("/interaction/:uid", async (req, res) => {
     const interaction = await provider.interactionDetails(req, res);
     if (req.params.uid !== interaction.uid) {
-      res.sendStatus(403);
+      res
+        .status(403)
+        .type("html")
+        .send(
+          connectionUi(req.headers.cookie).error("Подключение недоступно", "Начните подключение заново из AI-клиента."),
+        );
       return;
     }
     const client = await provider.Client.find(String(interaction.params.client_id));
@@ -262,7 +279,7 @@ export async function createHttpGateway(options: GatewayOptions) {
             .includes("login") || interaction.params.max_age !== undefined,
       });
       const entry = `/?mcp_login=${encodeURIComponent(handle)}&reauth=1`;
-      loginEntry = `<p><a href="${entry}">Войти или зарегистрироваться в Telegram MCP</a></p>`;
+      loginEntry = `<div class="actions"><a class="button" href="${entry}">Войти или зарегистрироваться в Telegram MCP</a></div><p class="help">После входа вы вернётесь к подтверждению доступа. Telegram повторно подключать не нужно.</p>`;
     }
     const legacyFields =
       prompt === "login" && !useSession && !options.cabinetLogin
@@ -284,7 +301,13 @@ export async function createHttpGateway(options: GatewayOptions) {
       )
       .type("html")
       .send(
-        `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: ${escapeHtml(identity.describeAccess(browser?.accountId ?? interaction.session?.accountId))}</p>${loginEntry}${form}</html>`,
+        connectionUi(req.headers.cookie).page(
+          isConsent ? "Разрешить доступ к Telegram?" : useSession ? "Продолжить подключение" : "Подключить AI-клиент",
+          isConsent
+            ? "Проверьте, какой клиент получает доступ и какие действия ему разрешены."
+            : "Используйте свой аккаунт Telegram MCP, чтобы подключить клиент.",
+          `<div class="access"><span class="accessLabel">Клиент</span><strong class="clientName">${escapeHtml(client?.clientName ?? client?.clientId)}</strong><p class="permission"><span class="accessLabel">Разрешение</span>${escapeHtml(identity.describeAccess(browser?.accountId ?? interaction.session?.accountId))}</p></div>${loginEntry}${form}<p class="hint">Доступ можно отозвать в разделе «Подключённые клиенты» кабинета.</p>`,
+        ),
       );
   });
   app.post(
@@ -293,7 +316,15 @@ export async function createHttpGateway(options: GatewayOptions) {
     express.urlencoded({ extended: false, limit: "8kb" }),
     async (req, res) => {
       if (req.headers.origin !== origin) {
-        res.sendStatus(403);
+        res
+          .status(403)
+          .type("html")
+          .send(
+            connectionUi(req.headers.cookie).error(
+              "Обновите подключение",
+              "Откройте ссылку подключения из AI-клиента заново.",
+            ),
+          );
         return;
       }
       const interaction = await provider.interactionDetails(req, res);
@@ -313,7 +344,12 @@ export async function createHttpGateway(options: GatewayOptions) {
           .status(403)
           .type("html")
           .send(
-            `<!doctype html><html lang="ru"><title>Обновите подтверждение</title><p>Подтверждение устарело. Проверьте актуальные права перед подключением клиента.</p><a href="/interaction/${escapeHtml(interaction.uid)}">Вернуться к подтверждению</a></html>`,
+            connectionUi(req.headers.cookie).error(
+              "Обновите подтверждение",
+              "Подтверждение устарело. Проверьте актуальные права перед подключением клиента.",
+              `/interaction/${interaction.uid}`,
+              "Вернуться к подтверждению",
+            ),
           );
         return;
       }
@@ -344,7 +380,15 @@ export async function createHttpGateway(options: GatewayOptions) {
       }
       if (interaction.prompt.name === "login") {
         if (options.cabinetLogin) {
-          res.status(401).send("Войдите в кабинет Telegram MCP");
+          res
+            .status(401)
+            .type("html")
+            .send(
+              connectionUi(req.headers.cookie).error(
+                "Войдите в Telegram MCP",
+                "Войдите в кабинет и начните подключение клиента заново.",
+              ),
+            );
           return;
         }
         const accountId =
@@ -355,7 +399,17 @@ export async function createHttpGateway(options: GatewayOptions) {
               })
             : undefined;
         if (!accountId) {
-          res.status(401).send("Неверные данные для входа");
+          res
+            .status(401)
+            .type("html")
+            .send(
+              connectionUi(req.headers.cookie).error(
+                "Неверные данные для входа",
+                "Проверьте логин и пароль и попробуйте ещё раз.",
+                `/interaction/${interaction.uid}`,
+                "Вернуться ко входу",
+              ),
+            );
           return;
         }
         await provider.interactionFinished(
@@ -367,7 +421,15 @@ export async function createHttpGateway(options: GatewayOptions) {
       } else if (interaction.prompt.name === "consent") {
         const accountId = interaction.session?.accountId;
         if (!accountId || !identity.isActive(accountId) || (options.cabinetLogin && browser?.accountId !== accountId)) {
-          res.sendStatus(403);
+          res
+            .status(403)
+            .type("html")
+            .send(
+              connectionUi(req.headers.cookie).error(
+                "Войдите в свой аккаунт",
+                "Аккаунт изменился или вход истёк. Начните подключение клиента заново.",
+              ),
+            );
           return;
         }
         const grant =
@@ -375,7 +437,15 @@ export async function createHttpGateway(options: GatewayOptions) {
             ? await provider.Grant.find(interaction.grantId)
             : new provider.Grant({ accountId, clientId: String(interaction.params.client_id) });
         if (!grant) {
-          res.sendStatus(400);
+          res
+            .status(400)
+            .type("html")
+            .send(
+              connectionUi(req.headers.cookie).error(
+                "Не удалось подтвердить доступ",
+                "Начните подключение клиента заново и проверьте разрешения.",
+              ),
+            );
           return;
         }
         const details = interaction.prompt.details;
@@ -385,7 +455,15 @@ export async function createHttpGateway(options: GatewayOptions) {
           (details.missingResourceScopes ?? {}) as Record<string, string[]>,
         )) {
           if (target !== resource) {
-            res.sendStatus(400);
+            res
+              .status(400)
+              .type("html")
+              .send(
+                connectionUi(req.headers.cookie).error(
+                  "Не удалось подтвердить доступ",
+                  "Начните подключение клиента заново и проверьте разрешения.",
+                ),
+              );
             return;
           }
           grant.addResourceScope(target, scopes);
@@ -394,7 +472,15 @@ export async function createHttpGateway(options: GatewayOptions) {
         identity.bindGrant(accountId, grantId, String(interaction.params.client_id));
         await provider.interactionFinished(req, res, { consent: { grantId } }, { mergeWithLastSubmission: true });
       } else {
-        res.sendStatus(400);
+        res
+          .status(400)
+          .type("html")
+          .send(
+            connectionUi(req.headers.cookie).error(
+              "Не удалось подтвердить доступ",
+              "Начните подключение клиента заново и проверьте разрешения.",
+            ),
+          );
       }
     },
   );
@@ -440,16 +526,30 @@ export async function createHttpGateway(options: GatewayOptions) {
       await mcpHandler(req, res);
     },
   );
-  const onError: ErrorRequestHandler = (error, _req, res, _next) => {
+  const onError: ErrorRequestHandler = (error, req, res, _next) => {
     if (res.headersSent) {
       res.end();
       return;
     }
-    res.status(error?.type === "entity.too.large" ? 413 : 400).json({ error: "Request rejected" });
+    const status = error?.type === "entity.too.large" ? 413 : 400;
+    if (req.path.startsWith("/interaction/")) {
+      res
+        .status(status)
+        .type("html")
+        .send(
+          connectionUi(req.headers.cookie).error(
+            "Ссылка подключения устарела",
+            "Вернитесь в AI-клиент и начните подключение заново. Ваш аккаунт и Telegram-сессия сохранены.",
+          ),
+        );
+      return;
+    }
+    res.status(status).json({ error: "Request rejected" });
   };
   app.use(onError);
   return {
     app,
+    clientName: async (id: string) => (await provider.Client.find(id))?.clientName,
     revokeGrants: async (ids: string[]) => {
       for (const id of ids) {
         const grant = await provider.Grant.find(id);

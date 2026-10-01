@@ -36,7 +36,7 @@ class Supervisor {
     this.stopped.push(userId);
   }
 }
-async function setup(ttlMs?: number) {
+async function setup(ttlMs?: number, clientName?: (id: string) => Promise<string | undefined>) {
   const store = createSaasStore(":memory:");
   const auth = new SaasAuth(store, { csrfKey: Buffer.alloc(32, 1) });
   const supervisor = new Supervisor();
@@ -48,6 +48,7 @@ async function setup(ttlMs?: number) {
     supervisor,
     attempts,
     publicUrl: origin,
+    clientName,
     revokeGrants: async (ids) => {
       revoked.push(ids);
     },
@@ -377,6 +378,24 @@ test("genuinely new QR attempts still enforce quota after three starts", async (
     assert.equal(denied.status, 429);
     assert.ok(denied.headers.get("retry-after"));
     assert.equal((await a.request("/me")).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test("client labels use OAuth metadata only for the authenticated owner's grants", async () => {
+  const s = await setup(undefined, async (id) => (id === "client-a" ? "Alice AI" : undefined));
+  try {
+    const a = s.jar(),
+      b = s.jar();
+    const alice = await a.register("alice"),
+      bob = await b.register("bobby");
+    s.store.bindGrant(alice.value.user.id, "grant-a", "client-a", 1);
+    s.store.bindGrant(bob.value.user.id, "grant-b", "client-b", 1);
+    const listed = await (await a.request("/clients")).json();
+    assert.deepEqual(listed.clients, [{ grantId: "grant-a", clientId: "client-a", version: 1, name: "Alice AI" }]);
+    const other = await (await b.request("/clients")).json();
+    assert.deepEqual(other.clients, [{ grantId: "grant-b", clientId: "client-b", version: 1 }]);
   } finally {
     await s.close();
   }

@@ -6,22 +6,64 @@ import { transformSync } from "esbuild";
 // state transitions, rendering, API error parsing, and event handlers remain real.
 export async function dashboard(
   respond: (path: string, method: string, body: Record<string, string> | undefined) => Promise<Response> | Response,
+  options: { hash?: string } = {},
 ) {
   const events = new Map<string, (event: unknown) => void>();
   const windowEvents = new Map<string, () => void>();
   const timers = new Map<number, () => void>();
   let sequence = 0;
+  let activeElement: unknown;
+  let html = "";
+  let forms: {
+    id: string;
+    elements: { name: string; value: string; type: string; checked: boolean; focus: () => void }[];
+  }[] = [];
   const app = {
-    innerHTML: "",
+    get innerHTML() {
+      return html;
+    },
+    set innerHTML(value: string) {
+      html = value;
+      forms = [...value.matchAll(/<form[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)].map((match) => ({
+        id: match[1],
+        elements: [...match[2].matchAll(/<input([^>]*)>|<textarea([^>]*)>([\s\S]*?)<\/textarea>/g)].map((field) => {
+          const attrs = field[1] ?? field[2];
+          const element = {
+            name: /name="([^"]+)"/.exec(attrs)?.[1] ?? "",
+            value: field[3] ?? /value="([^"]*)"/.exec(attrs)?.[1] ?? "",
+            type: /type="([^"]+)"/.exec(attrs)?.[1] ?? "text",
+            checked: /\bchecked\b/.test(attrs),
+            focus: () => {
+              activeElement = element;
+            },
+          };
+          return element;
+        }),
+      }));
+    },
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => (selector === "form" ? forms : []),
     addEventListener: (name: string, callback: (event: unknown) => void) => events.set(name, callback),
   };
   const setTimer = (callback: () => void) => {
     timers.set(++sequence, callback);
     return sequence;
   };
+  const location = { search: "", hash: options.hash ?? "", assign: () => {} };
   const context = createContext({
-    document: { querySelector: () => app, hidden: false },
-    location: { search: "", assign: () => {} },
+    document: {
+      querySelector: () => app,
+      hidden: false,
+      get activeElement() {
+        return activeElement;
+      },
+    },
+    location,
+    history: {
+      replaceState: (_state: unknown, _title: string, url: string) => {
+        location.hash = url;
+      },
+    },
     navigator: {},
     localStorage: {},
     sessionStorage: {},
@@ -64,7 +106,20 @@ export async function dashboard(
   await settle();
   return {
     html: () => app.innerHTML,
+    currentHash: () => location.hash,
+    input: (name: string, value: string) => {
+      const element = forms.flatMap((form) => form.elements).find((field) => field.name === name);
+      if (!element) throw new Error(`Missing field ${name}`);
+      element.value = value;
+      element.focus();
+    },
+    field: (name: string) => forms.flatMap((form) => form.elements).find((field) => field.name === name)?.value,
     settle,
+    hash: async (hash: string) => {
+      location.hash = hash;
+      windowEvents.get("hashchange")?.();
+      await settle();
+    },
     focus: async () => {
       windowEvents.get("focus")?.();
       await settle();

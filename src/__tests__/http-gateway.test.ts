@@ -158,6 +158,28 @@ describe("authenticated HTTPS gateway contract", () => {
     throw new Error("OAuth flow did not finish");
   }
 
+  it("expired connection links give a browser recovery page while API errors remain JSON", async () => {
+    const response = await request("/interaction/missing-interaction", { headers: { accept: "text/html" } });
+    assert.equal(response.status, 400);
+    assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+    const html = await response.text();
+    assert.match(html, /href="\/"/);
+    assert.match(html, /Начните подключение заново/);
+    const api = await request("/oauth/token", json({ grant_type: "bad-fixture" }));
+    assert.match(api.headers.get("content-type") ?? "", /application\/json/);
+  });
+
+  it("connection recovery honors only recognized appearance preferences", async () => {
+    for (const [cookie, expected] of [
+      ["mcp-ui-theme=light", "light"],
+      ["mcp-ui-theme=dark", "dark"],
+      ["mcp-ui-theme=evil", "system"],
+    ]) {
+      const response = await request("/interaction/missing-interaction", { headers: { accept: "text/html", cookie } });
+      assert.match(await response.text(), new RegExp(`data-theme="${expected}"`));
+    }
+  });
+
   it("requires PKCE, grants tools only after owner consent, rotates refresh and revokes access", async () => {
     const { client, verifier, code } = await authorize();
     const values = {

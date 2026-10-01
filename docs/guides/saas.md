@@ -14,6 +14,16 @@ After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Strea
 
 AI clients authenticate through the same cabinet registration/login and still need explicit OAuth consent. `prompt=login` and `max_age` require fresh authentication when applicable. Expired continuations must be restarted from the client. Existing accounts are removed for this release by the owner's explicit request; users register again.
 
+## Cabinet interface
+
+The cabinet and OAuth connection pages share Telegram-style light and dark themes. Appearance follows the system by default; the theme button cycles through dark, light and automatic. The preference uses `mcp-ui-theme` browser storage and a non-authentication cookie so connection pages use the same appearance.
+
+Cabinet sections support hash URLs and browser back/forward navigation. Mobile navigation stays at the bottom with all five sections available. Password fields can be revealed, keyboard focus remains visible, and configuration examples expand on demand.
+
+Background refreshes and failed requests retain form input and focus within the same account and page. Account changes clear the prior account's draft state. A startup outage offers retry instead of displaying registration; client lists distinguish loading, empty results and errors. Client labels come from their OAuth registration metadata, with the client ID as fallback.
+
+Saving unchanged permissions preserves existing client grants. Actual permission changes still revoke grants and require clients to authorize the new policy. The interface states this before saving. Connection errors and expired confirmations provide recovery actions while protocol API errors remain JSON.
+
 ## Storage and configuration
 
 Use the variables in [saas.env.example](https://github.com/terowoc/mcp-telegram/blob/main/packaging/saas.env.example). SaaS requires an HTTPS public origin, server Telegram application credentials, absolute storage paths, and a private 32-byte encryption key file. Provision the key once:
