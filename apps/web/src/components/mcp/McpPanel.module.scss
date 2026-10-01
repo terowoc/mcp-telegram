@@ -222,3 +222,14 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.unified {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+
+  margin: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--color-borders);
+  border-radius: 0.75rem;
+}

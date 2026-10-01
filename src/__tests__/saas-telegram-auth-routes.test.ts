@@ -23,6 +23,7 @@ async function setup() {
   const contexts = new BootstrapContexts({ csrfKey: randomBytes(32) });
   let full = false,
     started = 0;
+  let dispose = async () => {};
   const callbacks = new Map<string, (e: TelegramAuthEvent) => void>();
   const attempts = new TelegramAuthAttempts({
     auth,
@@ -36,7 +37,7 @@ async function setup() {
         event({ type: "token", token: "AQID", expiresAt: Date.now() + 30000 });
       },
       submitPassword: () => {},
-      dispose: async () => {},
+      dispose: () => dispose(),
     }),
   });
   const router = createTelegramAuthRoutes({
@@ -123,6 +124,9 @@ async function setup() {
     continuations,
     jar,
     started: () => started,
+    setDispose: (value: () => Promise<void>) => {
+      dispose = value;
+    },
     setFull: () => {
       full = true;
     },
@@ -288,5 +292,56 @@ test("passwordless deletion requires fresh server authentication and explicit co
     assert.equal(f.store.findByTelegramId("12345"), undefined);
   } finally {
     await f.close();
+  }
+});
+
+test("revoking bootstrap context cancels all former-tab attempts and rejects their completion", async () => {
+  const s = await setup();
+  try {
+    const owner = s.jar();
+    await owner.context();
+    const { body } = await owner.start();
+    s.verify(body.id);
+    assert.equal((await owner.request("/telegram-auth/revoke", "POST", {})).status, 204);
+    assert.equal((await owner.request(`/telegram-auth/${body.id}/complete`, "POST", {})).status, 401);
+    assert.equal((await owner.start()).res.status, 403);
+    assert.equal(s.store.findByTelegramId("12345"), undefined);
+  } finally {
+    await s.close();
+  }
+});
+test("bootstrap revocation fences a completion already awaiting worker exit", async () => {
+  const s = await setup();
+  let release: () => void, entered: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const disposing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  s.setDispose(async () => {
+    entered();
+    await waiting;
+  });
+  try {
+    const owner = s.jar();
+    await owner.context();
+    const { body } = await owner.start();
+    s.verify(body.id);
+    const completion = owner.request(`/telegram-auth/${body.id}/complete`, "POST", {});
+    await disposing;
+    const revocation = owner.request("/telegram-auth/revoke", "POST", {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(release);
+    release();
+    assert.equal((await revocation).status, 204);
+    const response = await completion;
+    assert.equal(response.status, 409);
+    assert.equal(response.headers.get("set-cookie"), null);
+    assert.equal(s.store.findByTelegramId("12345"), undefined);
+  } finally {
+    assert.ok(release);
+    release();
+    await s.close();
   }
 });

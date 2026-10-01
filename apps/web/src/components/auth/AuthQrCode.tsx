@@ -24,6 +24,7 @@ import useMediaTransitionDeprecated from '../../hooks/useMediaTransitionDeprecat
 import useMultiaccountInfo from '../../hooks/useMultiaccountInfo';
 
 import AnimatedIcon from '../common/AnimatedIcon';
+import McpLoginOptIn from '../mcp/McpLoginOptIn';
 import Button from '../ui/Button';
 import Loading from '../ui/Loading';
 
@@ -166,6 +167,7 @@ const AuthCode = ({
           {!isQrMounted && <div className="qr-loading"><Loading /></div>}
         </div>
         <h1>{lang('LoginQRTitle')}</h1>
+        <McpLoginOptIn />
         <ol>
           <li><span>{lang('LoginQRHelp1')}</span></li>
           <li><span>{lang('LoginQRHelp2', undefined, { withNodes: true, withMarkdown: true })}</span></li>

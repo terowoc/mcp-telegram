@@ -10,6 +10,10 @@ import fallback from '../../../../assets/localization/fallback.strings?raw';
 // This scenario is loaded only by the mocked Telegram transport in browser tests
 export default async function invokeMcpFixture(client: TelegramClient, request: object) {
   await Promise.resolve();
+  if (request instanceof Api.auth.AcceptLoginToken) {
+    const response = await fetch('/__fixture__/accept-token', { method: 'POST' });
+    return response.ok ? true : undefined;
+  }
   if (request instanceof Api.messages.GetDialogFilters) {
     return new Api.messages.DialogFilters({ filters: [new Api.DialogFilterDefault()] });
   }

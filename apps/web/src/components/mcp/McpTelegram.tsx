@@ -65,7 +65,7 @@ function McpTelegram({ me, attempt, isBusy, browserTelegramId, hasMismatch, acti
       <p className={styles.note}>{lang('McpSeparateSessions')}</p>
       {!isActive && (
         <Button disabled={isBusy} onClick={() => actions.startLogin()}>
-          {lang(me.telegram.sessionPresent ? 'McpRelinkTelegram' : 'McpLinkTelegram')}
+          {lang('McpManualQr')}
         </Button>
       )}
       {attempt?.state === 'qr' && attempt.dataUrl && (

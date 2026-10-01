@@ -1,3 +1,4 @@
+import { Api as GramJs } from '../../../lib/gramjs';
 import { PasskeyLoginRequestedError, UserAlreadyAuthorizedError } from '../../../lib/gramjs/errors';
 
 import type {
@@ -10,6 +11,7 @@ import type {
 
 import { wrapError } from '../helpers/misc';
 import { sendApiUpdate } from '../updates/apiUpdateEmitter';
+import { invokeRequest } from './client';
 
 const authController: {
   resolve?: AnyToVoidFunction;
@@ -177,4 +179,18 @@ export function restartAuthWithPasskey(credentialJson: AuthenticationResponseJSO
   }
 
   authController.reject(new PasskeyLoginRequestedError(credentialJson));
+}
+
+export async function acceptMcpLoginToken({ token, browserTelegramId }: {
+  token: string; browserTelegramId: string;
+}) {
+  if (!/^[A-Za-z0-9_-]{16,1024}$/.test(token)) return undefined;
+  const self = await invokeRequest(new GramJs.users.GetFullUser({ id: new GramJs.InputUserSelf() }));
+  const user = self?.users.find((value) => value instanceof GramJs.User && value.self);
+  if (!(user instanceof GramJs.User) || user.id.toString() !== browserTelegramId) return undefined;
+  const decoded = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  return invokeRequest(new GramJs.auth.AcceptLoginToken({ token: bytes }), {
+    shouldReturnTrue: true, shouldIgnoreErrors: true,
+  });
 }

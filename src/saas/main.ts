@@ -82,7 +82,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     version: env.npm_package_version ?? "1.43.1",
   });
 }
-export async function startSaas(config: SaasConfig, options: { spawn?: typeof fork } = {}) {
+export async function startSaas(
+  config: SaasConfig,
+  options: { spawn?: typeof fork; bootstrapSpawn?: typeof fork } = {},
+) {
   validate(config);
   const csp = config.webRoot
     ? (await readFile(join(config.webRoot, "index.html"), "utf8")).match(
@@ -115,7 +118,8 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     auth,
     store,
     vault,
-    createWorker: () => new TelegramAuthWorker({ budget, apiId: config.apiId, apiHash: config.apiHash }),
+    createWorker: () =>
+      new TelegramAuthWorker({ budget, apiId: config.apiId, apiHash: config.apiHash, spawn: options.bootstrapSpawn }),
   });
   let gateway: Awaited<ReturnType<typeof createHttpGateway>>;
   try {

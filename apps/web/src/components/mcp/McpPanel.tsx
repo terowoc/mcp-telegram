@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from '../../lib/teact/teact';
 
+import { getMcpLoginEntry } from '../../util/mcpLogin';
 import useMcpPanel from './useMcpPanel';
 
 import useLang from '../../hooks/useLang';
@@ -13,10 +14,13 @@ import McpAuth from './McpAuth';
 import McpClients from './McpClients';
 import McpConnectionHelp from './McpConnectionHelp';
 import McpTelegram from './McpTelegram';
+import McpUnifiedLogin from './McpUnifiedLogin';
 
 import styles from './McpPanel.module.scss';
 
-export type OwnProps = { isOpen?: boolean; browserTelegramId?: string; onClose: NoneToVoidFunction };
+export type OwnProps = {
+  isOpen?: boolean; shouldStart?: boolean; browserTelegramId?: string; onClose: NoneToVoidFunction;
+};
 const SECTIONS = [
   { id: 'telegram', label: 'McpTelegram' },
   { id: 'access', label: 'McpAccess' },
@@ -25,13 +29,17 @@ const SECTIONS = [
   { id: 'account', label: 'McpAccount' },
 ] as const;
 
-function McpPanel({ isOpen, browserTelegramId, onClose }: OwnProps) {
+function McpPanel({ isOpen, shouldStart, browserTelegramId, onClose }: OwnProps) {
   const lang = useLang();
   const state = useMcpPanel({ isOpen, browserTelegramId });
   const [section, setSection] = useState<(typeof SECTIONS)[number]['id']>('telegram');
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [password, setPassword] = useState('');
+  const { continuation, isLegacy } = getMcpLoginEntry();
+  const shouldReauthenticate = state.error?.code === 'reauthentication-required';
   const { me, actions, isBusy, error } = state;
+  const accountLabel = me?.user.hasPassword
+    ? me.user.login : me?.telegram.account?.username || me?.telegram.account?.id;
   useEffect(() => {
     setPassword('');
     setIsDeleteOpen(false);
@@ -84,8 +92,18 @@ function McpPanel({ isOpen, browserTelegramId, onClose }: OwnProps) {
               <Button onClick={() => actions.dismissRecoveryCodes()}>{lang('McpRecoverySaved')}</Button>
             </section>
           )}
+          <McpUnifiedLogin
+            isOpen={isOpen}
+            shouldStart={shouldStart && !isBusy}
+            browserTelegramId={browserTelegramId}
+            continuation={continuation}
+            hasPassword={me?.user.hasPassword}
+            shouldResume={Boolean(isLegacy && me)}
+            shouldReauthenticate={shouldReauthenticate}
+            onSuccess={() => actions.refresh()}
+          />
           {!me ? (
-            <McpAuth isBusy={isBusy} isRecovered={state.isRecovered} actions={actions} />
+            <McpAuth isBusy={isBusy} isRecovered={state.isRecovered} actions={actions} shouldShowLegacy={isLegacy} />
           ) : (
             <div className={styles.layout}>
               <nav className={styles.nav} aria-label={lang('McpTitle')}>
@@ -103,7 +121,7 @@ function McpPanel({ isOpen, browserTelegramId, onClose }: OwnProps) {
                 ))}
               </nav>
               <div className={styles.body}>
-                <p className={styles.signedIn}>{lang('McpUserLogin', { login: me.user.login })}</p>
+                <p className={styles.signedIn}>{lang('McpUserLogin', { login: accountLabel })}</p>
                 {section === 'telegram' && (
                   <McpTelegram
                     me={me}
@@ -150,7 +168,7 @@ function McpPanel({ isOpen, browserTelegramId, onClose }: OwnProps) {
             text={lang('McpDeleteConfirm')}
             confirmLabel={lang('McpDeleteAccount')}
             confirmIsDestructive
-            isConfirmDisabled={!password || isBusy}
+            isConfirmDisabled={Boolean(me?.user.hasPassword && !password) || isBusy}
             onClose={() => {
               setPassword('');
               setIsDeleteOpen(false);
@@ -159,21 +177,25 @@ function McpPanel({ isOpen, browserTelegramId, onClose }: OwnProps) {
               const value = password;
               setPassword('');
               setIsDeleteOpen(false);
-              void actions.deleteAccount(value);
+              void actions.deleteAccount(me?.user.hasPassword ? value : undefined);
             }}
           >
-            <label className={styles.label} htmlFor="mcp-delete-password">
-              {lang('McpPassword')}
-            </label>
-            <input
-              className="form-control"
-              id="mcp-delete-password"
-              type="password"
-              value={password}
-              maxLength={1024}
-              autoComplete="current-password"
-              onInput={(event: React.FormEvent<HTMLInputElement>) => setPassword(event.currentTarget.value)}
-            />
+            {me?.user.hasPassword && (
+              <>
+                <label className={styles.label} htmlFor="mcp-delete-password">
+                  {lang('McpPassword')}
+                </label>
+                <input
+                  className="form-control"
+                  id="mcp-delete-password"
+                  type="password"
+                  value={password}
+                  maxLength={1024}
+                  autoComplete="current-password"
+                  onInput={(event: React.FormEvent<HTMLInputElement>) => setPassword(event.currentTarget.value)}
+                />
+              </>
+            )}
           </ConfirmDialog>
         </>
       )}

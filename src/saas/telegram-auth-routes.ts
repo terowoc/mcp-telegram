@@ -123,6 +123,12 @@ export function createTelegramAuthRoutes(options: {
       const view = await attempts.start(res.locals.bootstrap.contextHash);
       if (continuation && parsed.data.continuation)
         continuations.set(view.id, { handle: parsed.data.continuation, expiresAt: continuation.expiresAt });
+      if (!contexts.verify(req, true)) {
+        await attempts.cancel(res.locals.bootstrap.contextHash, view.id);
+        continuations.delete(view.id);
+        res.status(401).json({ error: "authentication-required" });
+        return;
+      }
       contexts.extend(req, res);
       res.status(201).json(view);
     },
@@ -135,6 +141,12 @@ export function createTelegramAuthRoutes(options: {
     }
     res.locals.bootstrap = context;
     next();
+  });
+  router.post("/revoke", async (req, res) => {
+    const contextHash = res.locals.bootstrap.contextHash;
+    contexts.clear(req, res);
+    await attempts.clearContext(contextHash);
+    res.sendStatus(204);
   });
   const owned = (req: Request, res: Response) => {
     const view = attempts.get(res.locals.bootstrap.contextHash, String(req.params.id));
@@ -203,7 +215,8 @@ export function createTelegramAuthRoutes(options: {
     }
     const signed = await attempts.complete(res.locals.bootstrap.contextHash, String(req.params.id), {
       legacyUserId,
-      authorize: legacyUserId ? () => auth.authenticate(saasCookie(req))?.userId === legacyUserId : undefined,
+      authorize: () =>
+        !!contexts.verify(req, true) && (!legacyUserId || auth.authenticate(saasCookie(req))?.userId === legacyUserId),
     });
     if (ids.length) await options.revokeGrants(ids).catch(() => {});
     const continuation = continuationHandle
