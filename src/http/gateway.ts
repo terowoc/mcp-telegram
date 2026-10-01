@@ -203,6 +203,7 @@ export async function createHttpGateway(options: GatewayOptions) {
     const client = await provider.Client.find(String(interaction.params.client_id));
     const prompt = interaction.prompt.name;
     res
+      .set("Referrer-Policy", "same-origin")
       .type("html")
       .send(
         `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width"><title>Telegram MCP — доступ</title><style>body{font:18px system-ui;max-width:36rem;margin:10vh auto;padding:1rem}input,button{font:inherit;padding:.6rem;margin:.5rem 0}input{width:90%}</style><h1>Доступ к Telegram MCP</h1><p>Клиент: <strong>${escapeHtml(client?.clientName ?? client?.clientId)}</strong></p><p>Разрешение: ${escapeHtml(identity.describeAccess(interaction.session?.accountId))}</p><form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${csrfFor(interaction.uid, prompt, interaction.session?.accountId)}">${prompt === "login" ? `${identity.kind === "saas" ? '<label>Логин TG Bridge<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль TG Bridge" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>` : ""}<button name="approve" value="yes">${prompt === "login" ? "Войти" : "Разрешить доступ"}</button> <button name="approve" value="no">Отказать</button></form></html>`,

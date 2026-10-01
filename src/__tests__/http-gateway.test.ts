@@ -134,6 +134,11 @@ describe("authenticated HTTPS gateway contract", () => {
       const path = new URL(location, publicUrl).pathname + new URL(location, publicUrl).search;
       response = await request(path);
       if (response.status === 200 && path.startsWith("/interaction/")) {
+        assert.equal(
+          response.headers.get("referrer-policy"),
+          "same-origin",
+          "OAuth forms must preserve the browser Origin on same-origin POSTs",
+        );
         const html = await response.text();
         assert.equal(html.includes("<script>alert(1)</script>"), false);
         const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
