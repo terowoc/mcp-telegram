@@ -12,9 +12,28 @@ import { OAuthContinuations } from "./oauth-continuations.js";
 import { createSaasRoutes } from "./routes.js";
 import { loadVaultKey, SessionVault } from "./session-vault.js";
 import { mountSaasFrontend } from "./static.js";
-import { createSaasStore } from "./store.js";
+import { createSaasStore, type SaasStore } from "./store.js";
 import { WorkerSupervisor } from "./supervisor.js";
 import { WorkerBudget } from "./worker-budget.js";
+
+/** Resume explicitly requested removals after a crash or a temporary filesystem error. */
+export async function cleanupPendingAccounts(
+  store: SaasStore,
+  stopUser: (id: string) => Promise<void>,
+  purgeFiles: (id: string) => Promise<void>,
+): Promise<void> {
+  for (const id of store.pendingDeletions()) {
+    // A cabinet must remain until every owned partition is gone.
+    if (store.hasOwnedConnections(id)) continue;
+    try {
+      await stopUser(id);
+      await purgeFiles(id);
+      store.deleteUser(id);
+    } catch {
+      // The persistent deletion marker remains for the next maintenance pass.
+    }
+  }
+}
 
 export interface SaasConfig {
   publicUrl: string;
@@ -151,6 +170,11 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   const pruneMedia = () => {
     if (pruning || closing) return;
     pruning = (async () => {
+      await cleanupPendingAccounts(
+        store,
+        (id) => supervisor.stopUser(id),
+        (id) => rm(join(config.filesRoot, id), { recursive: true, force: true }),
+      );
       for (const entry of await readdir(config.filesRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name) || supervisor.status(entry.name).busy) continue;
         // Grace exceeds the worker deadline, so an upload already in progress can settle.

@@ -96,6 +96,43 @@ describe("authenticated HTTPS gateway contract", () => {
     assert.equal("username" in health, false);
   });
 
+  it("OAuth form_post permits only the provider's exact inline script and registered callback", async () => {
+    const client = await (
+      await request(
+        "/oauth/reg",
+        json({
+          redirect_uris: ["https://client.example/callback"],
+          grant_types: ["authorization_code"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        }),
+      )
+    ).json();
+    const params = new URLSearchParams({
+      client_id: client.client_id,
+      redirect_uri: "https://client.example/callback",
+      response_type: "code",
+      response_mode: "form_post",
+      scope: "mcp:tools",
+      resource: `${publicUrl}/mcp`,
+      code_challenge: createHash("sha256").update("private-verifier").digest("base64url"),
+      code_challenge_method: "S256",
+      prompt: "none",
+    });
+    const response = await request(`/oauth/auth?${params}`, { headers: { cookie: "" } });
+    const html = await response.text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+    assert.ok(script, html);
+    const csp = response.headers.get("content-security-policy") ?? "";
+    assert.ok(csp.includes(`'sha256-${createHash("sha256").update(script).digest("base64")}'`), csp);
+    assert.match(csp, /form-action[^;]*https:\/\/client\.example/);
+    assert.match(csp, /script-src[^;]*https:\/\/static\.cloudflareinsights\.com/);
+    assert.doesNotMatch(
+      csp.split(";").find((directive) => directive.trim().startsWith("script-src")) ?? "",
+      /unsafe-inline/,
+    );
+  });
+
   async function authorize() {
     const registration = await request(
       "/oauth/reg",

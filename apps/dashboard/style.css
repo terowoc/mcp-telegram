@@ -1589,3 +1589,5 @@ body {
     width: 13.5rem;
   }
 }
+
+.accountChoices{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0}.accountDetail code{overflow-wrap:anywhere;word-break:break-all;font-size:.8rem}.card details{margin-top:1rem}.card details form{margin-top:1rem}

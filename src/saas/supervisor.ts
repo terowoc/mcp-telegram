@@ -293,7 +293,7 @@ export class WorkerSupervisor {
       if (pending.attemptId === message.attemptId) {
         try {
           if (message.event.type === "success") {
-            if (!pending.stagedSession) throw new Error("Verified session required");
+            if (pending.cancelled || !pending.stagedSession) throw new Error("Verified session required");
             this.options.store.putVerifiedTelegramSession(
               slot.userId,
               this.options.vault.encrypt(slot.userId, pending.stagedSession),
@@ -302,7 +302,14 @@ export class WorkerSupervisor {
             pending.stagedSession = undefined;
           }
           pending.onEvent?.(message.event);
-        } catch {
+        } catch (error) {
+          pending.onEvent?.({
+            type: "error",
+            code:
+              error instanceof Error && error.message === "Telegram account already added"
+                ? "account-already-added"
+                : "login-failed",
+          });
           void this.stopSlot(slot);
         }
       }

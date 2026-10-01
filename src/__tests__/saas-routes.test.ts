@@ -36,7 +36,11 @@ class Supervisor {
     this.stopped.push(userId);
   }
 }
-async function setup(ttlMs?: number, clientName?: (id: string) => Promise<string | undefined>) {
+async function setup(
+  ttlMs?: number,
+  clientName?: (id: string) => Promise<string | undefined>,
+  purgeUserFiles?: (id: string) => Promise<void>,
+) {
   const store = createSaasStore(":memory:");
   const auth = new SaasAuth(store, { csrfKey: Buffer.alloc(32, 1) });
   const supervisor = new Supervisor();
@@ -49,6 +53,7 @@ async function setup(ttlMs?: number, clientName?: (id: string) => Promise<string
     attempts,
     publicUrl: origin,
     clientName,
+    purgeUserFiles,
     revokeGrants: async (ids) => {
       revoked.push(ids);
     },
@@ -396,6 +401,119 @@ test("client labels use OAuth metadata only for the authenticated owner's grants
     assert.deepEqual(listed.clients, [{ grantId: "grant-a", clientId: "client-a", version: 1, name: "Alice AI" }]);
     const other = await (await b.request("/clients")).json();
     assert.deepEqual(other.clients, [{ grantId: "grant-b", clientId: "client-b", version: 1 }]);
+  } finally {
+    await s.close();
+  }
+});
+
+test("cabinet adds, names, selects and removes owned connections without crossing tenants", async () => {
+  const s = await setup();
+  try {
+    const a = s.jar(),
+      b = s.jar();
+    const alice = (await a.register("alice")).value.user.id;
+    await b.register("bobby");
+    s.store.bindGrant(alice, "old", "ai", 1);
+    const created = await a.request("/telegram/accounts", "POST", { label: "Работа" });
+    assert.equal(created.status, 201);
+    const work = (await created.json()).account;
+    assert.equal(work.label, "Работа");
+    assert.equal(s.store.findGrant("old"), undefined);
+    const listed = await (await a.request("/me")).json();
+    assert.equal(listed.accounts.length, 2);
+    assert.equal(listed.telegramAccountId, alice);
+    assert.equal((await b.request(`/me?telegramAccountId=${work.id}`)).status, 404);
+    assert.equal((await a.request(`/me?telegramAccountId=${work.id}`)).status, 200);
+    assert.equal((await a.request(`/telegram/accounts/${work.id}`, "PATCH", { label: "Work renamed" })).status, 200);
+    const selected = `/telegram/login?telegramAccountId=${work.id}`;
+    const qr = await a.request(selected, "POST", {});
+    assert.equal(qr.status, 202);
+    const attempt = await qr.json();
+    assert.equal((await a.request(`/telegram/login/${attempt.id}?telegramAccountId=${work.id}`)).status, 200);
+    assert.equal(
+      (await (await a.request(`/telegram/login?telegramAccountId=${work.id}`)).json()).attempt.id,
+      attempt.id,
+    );
+    assert.equal((await a.request(`/telegram/login/${attempt.id}`)).status, 404);
+    s.supervisor.events.get(`${work.id}:${attempt.id}`)?.({ type: "needs-password" });
+    assert.equal(
+      (
+        await a.request(`/telegram/login/${attempt.id}/password?telegramAccountId=${work.id}`, "POST", {
+          password: "cloud",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(s.supervisor.passwords.at(-1)?.userId, work.id);
+    assert.equal(
+      (await a.request(`/telegram/login/${attempt.id}/password`, "POST", { password: "wrong account" })).status,
+      404,
+    );
+    assert.equal(
+      (await a.request(`/policy?telegramAccountId=${work.id}`, "PUT", { profile: "read", chatIds: [] })).status,
+      200,
+    );
+    assert.equal(s.store.findUser(work.id)?.policy.profile, "read");
+    assert.equal(s.store.findUser(alice)?.policy.profile, "full");
+    assert.equal((await b.request(`/telegram/accounts/${work.id}`, "DELETE")).status, 404);
+    assert.equal((await a.request(`/telegram/accounts/${alice}`, "DELETE")).status, 409);
+    assert.equal((await a.request(`/telegram/accounts/${work.id}`, "DELETE")).status, 204);
+    assert.equal(s.store.findUser(work.id), undefined);
+    assert.equal((await a.request(`/me?telegramAccountId=${work.id}`)).status, 404);
+    assert.equal((await (await a.request("/me")).json()).accounts.length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test("cabinet deletion drains every owned worker and removes all connection records", async () => {
+  const s = await setup();
+  try {
+    const a = s.jar();
+    const owner = (await a.register("alice")).value.user.id;
+    const work = s.store.createTelegramConnection(owner, "Work");
+    s.store.putVerifiedTelegramSession(owner, "a", { id: "123" });
+    s.store.putVerifiedTelegramSession(work.id, "b", { id: "456" });
+    assert.equal((await a.request("/account", "DELETE", { password })).status, 204);
+    assert.equal(s.store.findUser(work.id), undefined);
+    assert.equal(s.store.findUser(owner), undefined);
+    assert.ok(s.supervisor.stopped.includes(work.id));
+    assert.ok(s.supervisor.stopped.includes(owner));
+  } finally {
+    await s.close();
+  }
+});
+
+test("failed connection removal remains visible for owner cleanup retries and cabinet deletion", async () => {
+  let fail = true;
+  const purged: string[] = [];
+  const s = await setup(undefined, undefined, async (id) => {
+    if (fail) throw new Error("Disk busy");
+    purged.push(id);
+  });
+  try {
+    const a = s.jar(),
+      b = s.jar();
+    const owner = (await a.register("alice")).value.user.id;
+    await b.register("bobby");
+    const work = s.store.createTelegramConnection(owner, "Work");
+    assert.equal((await a.request(`/telegram/accounts/${work.id}`, "DELETE")).status, 409);
+    const pending = (await (await a.request("/me")).json()).accounts.find(
+      (account: { id: string }) => account.id === work.id,
+    );
+    assert.ok(pending);
+    assert.equal(pending.removalPending, true);
+    assert.equal((await b.request(`/telegram/accounts/${work.id}`, "DELETE")).status, 404);
+    fail = false;
+    assert.equal((await a.request(`/telegram/accounts/${work.id}`, "DELETE")).status, 204);
+    assert.ok(purged.includes(work.id));
+    const another = s.store.createTelegramConnection(owner, "Another");
+    fail = true;
+    await a.request(`/telegram/accounts/${another.id}`, "DELETE");
+    fail = false;
+    assert.equal((await a.request("/account", "DELETE", { password })).status, 204);
+    assert.ok(purged.includes(another.id));
+    assert.equal(s.store.findUser(another.id), undefined);
   } finally {
     await s.close();
   }

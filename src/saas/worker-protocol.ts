@@ -38,7 +38,10 @@ export const loginEventSchema = z.discriminatedUnion("type", [
     type: z.literal("success"),
     account: z.object({ id: z.string().max(40), username: z.string().max(64).optional() }),
   }),
-  z.object({ type: z.literal("error"), code: z.enum(["cancelled", "login-failed", "worker-unavailable"]) }),
+  z.object({
+    type: z.literal("error"),
+    code: z.enum(["cancelled", "login-failed", "worker-unavailable", "account-already-added"]),
+  }),
 ]);
 export const childMessageSchema = z.discriminatedUnion("kind", [
   z.object({ generation: id, kind: z.literal("ready") }),

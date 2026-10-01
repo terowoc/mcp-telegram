@@ -174,7 +174,7 @@ test("a login success without saved session stops that worker without throwing i
       }),
     );
     assert.ok((await login) instanceof Error);
-    assert.deepEqual(events, []);
+    assert.deepEqual(events, [{ type: "error", code: "login-failed" }]);
   } finally {
     await s.supervisor.close();
     s.store.close();
@@ -613,6 +613,44 @@ test("tool timings distinguish connection delay without recording account identi
     assert.equal(timing.tool, "telegram-read-messages");
     assert.equal(JSON.stringify(timing).includes("private-fixture-secret"), false);
     assert.equal(JSON.stringify(timing).includes(s.users[0].id), false);
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("duplicate Telegram QR success never overwrites another account or saves the rejected candidate", async () => {
+  const s = setup();
+  try {
+    const owner = s.users[0],
+      work = s.store.createTelegramConnection(owner.id, "Work");
+    s.store.putTelegramAccount(owner.id, { id: "123" });
+    const original = s.store.getEncryptedSession(owner.id);
+    const events: unknown[] = [];
+    const login = s.supervisor
+      .startLogin(work.id, "work-attempt", (event) => events.push(event))
+      .catch((error) => error);
+    await waitFor(() => s.children[0]?.sent.some((message) => message.kind === "login-start") === true);
+    const child = s.children[0],
+      request = child.sent.find((message) => message.kind === "login-start");
+    assert.ok(request && "id" in request);
+    child.emit("message", {
+      kind: "session-save",
+      generation: request.generation,
+      id: "save",
+      session: "rejected-candidate",
+    });
+    child.emit("message", {
+      kind: "event",
+      generation: request.generation,
+      id: request.id,
+      attemptId: "work-attempt",
+      event: { type: "success", account: { id: "123" } },
+    });
+    await login;
+    assert.deepEqual(events, [{ type: "error", code: "account-already-added" }]);
+    assert.equal(s.store.getEncryptedSession(work.id), undefined);
+    assert.equal(s.store.getEncryptedSession(owner.id), original);
   } finally {
     await s.supervisor.close();
     s.store.close();

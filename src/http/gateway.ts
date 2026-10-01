@@ -136,6 +136,18 @@ export async function createHttpGateway(options: GatewayOptions) {
   };
   const provider = new Provider(issuer, config);
   provider.proxy = true;
+  provider.use(async (ctx, next) => {
+    await next();
+    // oidc-provider hashes its own inline form_post script. Keep that hash and
+    // permit a POST only to the registered redirect URI's origin.
+    const redirect = ctx.oidc?.params?.redirect_uri;
+    if (typeof redirect === "string" && ctx.oidc?.client?.redirectUriAllowed(redirect)) {
+      const target = new URL(redirect);
+      const source = target.origin === "null" ? target.protocol : target.origin;
+      const csp = ctx.response.get("Content-Security-Policy");
+      if (csp) ctx.set("Content-Security-Policy", csp.replace(/form-action[^;]*/, `form-action 'self' ${source}`));
+    }
+  });
   const uploads = new DirectMediaUploads({
     origin,
     identity,
@@ -152,7 +164,7 @@ export async function createHttpGateway(options: GatewayOptions) {
       "Referrer-Policy": "no-referrer",
       "Cache-Control": "no-store",
       "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        "default-src 'none'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     });
     if (req.headers.host !== url.host || req.protocol !== "https") {
       res.status(400).json({ error: "Invalid host or protocol" });
@@ -303,7 +315,7 @@ export async function createHttpGateway(options: GatewayOptions) {
       .set("Referrer-Policy", "same-origin")
       .set(
         "Content-Security-Policy",
-        `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${callbackSource}; frame-ancestors 'none'; base-uri 'none'`,
+        `default-src 'none'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; style-src 'unsafe-inline'; form-action 'self' ${callbackSource}; frame-ancestors 'none'; base-uri 'none'`,
       )
       .type("html")
       .send(
@@ -438,6 +450,7 @@ export async function createHttpGateway(options: GatewayOptions) {
             );
           return;
         }
+        const consentSnapshot = identity.consentBinding?.(accountId);
         const grant =
           interaction.grantId && identity.isGrantValid(accountId, interaction.grantId)
             ? await provider.Grant.find(interaction.grantId)
@@ -475,7 +488,12 @@ export async function createHttpGateway(options: GatewayOptions) {
           grant.addResourceScope(target, scopes);
         }
         const grantId = await grant.save();
-        identity.bindGrant(accountId, grantId, String(interaction.params.client_id));
+        try {
+          identity.bindGrant(accountId, grantId, String(interaction.params.client_id), consentSnapshot);
+        } catch (error) {
+          await grant.destroy();
+          throw error;
+        }
         await provider.interactionFinished(req, res, { consent: { grantId } }, { mergeWithLastSubmission: true });
       } else {
         res

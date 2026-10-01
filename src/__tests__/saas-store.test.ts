@@ -165,3 +165,61 @@ test("full signup default preserves existing read restrictions and grants after 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("schema v3 upgrade preserves primary grants and encrypted session, and added account ownership survives restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tg-account-migration-"));
+  const path = join(dir, "saas.sqlite");
+  try {
+    const first = createSaasStore(path);
+    const primary = first.register("alice", "private-hash", []);
+    first.putVerifiedTelegramSession(primary.id, "primary-envelope", { id: "123" });
+    first.bindGrant(primary.id, "grant", "client", 1);
+    first.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec("DROP TABLE telegram_connections; PRAGMA user_version=3;");
+    legacy.close();
+    const migrated = createSaasStore(path);
+    assert.equal(migrated.getEncryptedSession(primary.id), "primary-envelope");
+    assert.equal(migrated.findGrant("grant")?.userId, primary.id);
+    const work = migrated.createTelegramConnection(primary.id, "Работа");
+    migrated.putVerifiedTelegramSession(work.id, "work-envelope", { id: "456" });
+    migrated.updatePolicy(work.id, { profile: "read", chatIds: ["-100123"], version: 0 });
+    migrated.close();
+    const reopened = createSaasStore(path);
+    try {
+      assert.equal(reopened.ownsTelegramConnection(primary.id, work.id), true);
+      assert.deepEqual(
+        reopened.listTelegramConnections(primary.id).map((a) => a.label),
+        ["Основной", "Работа"],
+      );
+      assert.equal(reopened.getEncryptedSession(work.id), "work-envelope");
+      assert.equal(reopened.getEncryptedSession(primary.id), "primary-envelope");
+      assert.deepEqual(reopened.findUser(work.id)?.policy.chatIds, ["-100123"]);
+    } finally {
+      reopened.close();
+    }
+    const checked = new DatabaseSync(path);
+    assert.deepEqual(checked.prepare("PRAGMA foreign_key_check").all(), []);
+    checked.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cabinet deletion atomically queues all partitions for restart-safe cleanup", () => {
+  const store = createSaasStore(":memory:");
+  try {
+    const owner = store.register("alice", "hash", []);
+    const work = store.createTelegramConnection(owner.id, "Work");
+    store.requestCabinetDeletion(owner.id);
+    assert.equal(store.findUser(owner.id)?.disabled, true);
+    assert.equal(store.findUser(work.id)?.disabled, true);
+    assert.deepEqual(new Set(store.pendingDeletions()), new Set([owner.id, work.id]));
+    store.deleteUser(work.id);
+    assert.deepEqual(store.pendingDeletions(), [owner.id]);
+    store.deleteUser(owner.id);
+    assert.deepEqual(store.pendingDeletions(), []);
+  } finally {
+    store.close();
+  }
+});
