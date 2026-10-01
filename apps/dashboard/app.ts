@@ -24,6 +24,7 @@ const errors: Record<string, string> = {
   "operation-unavailable": "Операция сейчас недоступна. Обновите статус и попробуйте снова.",
   "invalid-policy": "Укажите до 100 числовых ID чатов, разделяя их запятой.",
   "attempt-not-waiting": "Telegram больше не ожидает пароль. Проверьте состояние подключения.",
+  "telegram-already-connected": "Telegram уже подключён. Обновите статус кабинета.",
 };
 let cabinet: Cabinet | undefined;
 let clients: Client[] = [];
@@ -37,6 +38,16 @@ let isError = false;
 let isBusy = false;
 let epoch = 0;
 const continuation = new URLSearchParams(location.search).get("mcp_login");
+class StaleReply extends Error {}
+
+async function accountRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const currentEpoch = epoch;
+  const user = cabinet;
+  if (!user) throw new StaleReply();
+  const value = await request<T>(path, method, body, user.csrfToken);
+  if (currentEpoch !== epoch || cabinet?.user.id !== user.user.id) throw new StaleReply();
+  return value;
+}
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "").replace(
@@ -111,6 +122,7 @@ function renderAccount(): string {
   return `<section class="card"><h2>Ваш аккаунт</h2><div class="accountDetail"><span class="muted">Логин</span><strong>${escapeHtml(cabinet!.user.login)}</strong></div><div class="accountDetail"><span class="muted">Тариф</span><span class="tag">Бесплатно</span></div><p class="muted">Выход из кабинета сохраняет подключение Telegram и доступы ваших MCP-клиентов.</p>${button("Выйти из аккаунта", "logout", "secondary")}</section><section class="card dangerCard"><h3>Удалить аккаунт</h3><p class="muted">Удалятся серверная сессия Telegram, данные кабинета и доступы всех AI-клиентов.</p><form id="deleteForm">${field("Подтвердите пароль аккаунта", "password", "password", 'autocomplete="current-password" maxlength="1024"')}<button class="button danger" ${isBusy ? "disabled" : ""}>Удалить аккаунт</button></form></section>`;
 }
 function showError(error: unknown): void {
+  if (error instanceof StaleReply) return;
   isError = true;
   message =
     error instanceof ApiError
@@ -127,6 +139,7 @@ function showError(error: unknown): void {
 }
 async function run(work: () => Promise<void>): Promise<void> {
   if (isBusy) return;
+  const currentEpoch = epoch;
   isBusy = true;
   message = "";
   isError = false;
@@ -134,7 +147,7 @@ async function run(work: () => Promise<void>): Promise<void> {
   try {
     await work();
   } catch (error) {
-    showError(error);
+    if (currentEpoch === epoch) showError(error);
   } finally {
     isBusy = false;
     render();
@@ -143,7 +156,28 @@ async function run(work: () => Promise<void>): Promise<void> {
 async function refresh(): Promise<void> {
   const currentEpoch = epoch;
   const value = await request<Cabinet>("/me");
-  if (currentEpoch === epoch) cabinet = value;
+  if (currentEpoch !== epoch) return;
+  const switchedAccount = cabinet && cabinet.user.id !== value.user.id;
+  if (switchedAccount) {
+    clearAttempt();
+    clients = [];
+    recoveryCodes = [];
+    epoch++;
+  }
+  cabinet = value;
+  if (switchedAccount) render();
+}
+async function resumeAttempt(): Promise<void> {
+  if (!cabinet || cabinet.telegram.sessionPresent || attempt) return;
+  const currentEpoch = epoch;
+  const userId = cabinet.user.id;
+  const value = await request<{ attempt?: Attempt }>("/telegram/login");
+  if (currentEpoch !== epoch || cabinet?.user.id !== userId || attempt) return;
+  attempt = value.attempt;
+  if (attempt) {
+    const id = attempt.id;
+    timer = window.setTimeout(() => void pollAttempt(id, currentEpoch), 200);
+  }
 }
 function clearAttempt(): void {
   clearTimeout(timer);
@@ -162,11 +196,12 @@ async function pollAttempt(id: string, currentEpoch: number): Promise<void> {
     const changed = value.state !== attempt.state || value.dataUrl !== attempt.dataUrl;
     attempt = value;
     if (value.state === "success") {
-      clearAttempt();
       await refresh();
-      if (currentEpoch !== epoch || !cabinet) return;
+      if (currentEpoch !== epoch || !cabinet || attempt?.id !== id) return;
+      clearAttempt();
       page = "mcp";
       message = "Telegram подключён. Теперь добавьте MCP в свой AI-клиент.";
+      isError = false;
       render();
       return;
     }
@@ -232,6 +267,7 @@ async function dispatchAction(action: string): Promise<void> {
     page = "telegram";
     if (!cabinet) authMode = "login";
     render();
+    if (cabinet) await run(resumeAttempt);
     return;
   }
   if (!cabinet) return;
@@ -256,7 +292,7 @@ async function dispatchAction(action: string): Promise<void> {
   if (action === "disconnect" && !confirm("Отключить Telegram и отозвать доступ всех MCP-клиентов?")) return;
   await run(async () => {
     if (action === "logout") {
-      await request("/logout", "POST", {}, cabinet!.csrfToken);
+      await accountRequest("/logout", "POST", {});
       epoch++;
       clearAttempt();
       cabinet = undefined;
@@ -265,13 +301,13 @@ async function dispatchAction(action: string): Promise<void> {
       authMode = "login";
     } else if (action === "start-telegram") {
       clearAttempt();
-      attempt = await request<Attempt>("/telegram/login", "POST", {}, cabinet!.csrfToken);
+      attempt = await accountRequest<Attempt>("/telegram/login", "POST", {});
       timer = window.setTimeout(() => void pollAttempt(attempt!.id, epoch), 200);
     } else if (action === "cancel-telegram") {
       const id = attempt?.id;
       if (id) {
         try {
-          await request(`/telegram/login/${id}`, "DELETE", undefined, cabinet!.csrfToken);
+          await accountRequest(`/telegram/login/${id}`, "DELETE");
         } catch (error) {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
         }
@@ -280,19 +316,15 @@ async function dispatchAction(action: string): Promise<void> {
       await refresh();
       if (cabinet?.telegram.sessionPresent) page = "mcp";
     } else if (action === "disconnect") {
-      await request("/telegram/disconnect", "POST", {}, cabinet!.csrfToken);
+      await accountRequest("/telegram/disconnect", "POST", {});
       clearAttempt();
       clients = [];
       await refresh();
       message = "Telegram отключён. Доступы MCP отозваны.";
-    } else if (action === "refresh-clients") clients = (await request<{ clients: Client[] }>("/clients")).clients;
+    } else if (action === "refresh-clients")
+      clients = (await accountRequest<{ clients: Client[] }>("/clients")).clients;
     else if (action === "resume-oauth") {
-      const result = await request<{ continueTo: string }>(
-        "/oauth/resume",
-        "POST",
-        { continuation },
-        cabinet!.csrfToken,
-      );
+      const result = await accountRequest<{ continueTo: string }>("/oauth/resume", "POST", { continuation });
       if (/^\/interaction\/[A-Za-z0-9_-]+$/.test(result.continueTo)) location.assign(result.continueTo);
     }
   });
@@ -310,7 +342,7 @@ app.addEventListener("click", (event) => {
   if (target.dataset.revoke && cabinet && confirm("Отозвать доступ этого клиента?")) {
     const id = target.dataset.revoke;
     void run(async () => {
-      await request(`/clients/${encodeURIComponent(id)}`, "DELETE", undefined, cabinet!.csrfToken);
+      await accountRequest(`/clients/${encodeURIComponent(id)}`, "DELETE");
       clients = clients.filter((client) => client.grantId !== id);
       message = "Доступ клиента отозван.";
     });
@@ -349,18 +381,26 @@ app.addEventListener("submit", (event) => {
         recoveryCodes = result.recoveryCodes ?? [];
       }
       epoch++;
-      await refresh();
-      page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
+      clearAttempt();
+      clients = [];
+      const authenticatedEpoch = epoch;
+      try {
+        await refresh();
+        page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
+        if (!recoveryCodes.length) await resumeAttempt();
+      } catch (error) {
+        if (authenticatedEpoch === epoch) showError(error);
+      }
     } else if (form.id === "telegramPasswordForm" && cabinet && attempt) {
-      await request(`/telegram/login/${attempt.id}/password`, "POST", { password }, cabinet.csrfToken);
+      await accountRequest(`/telegram/login/${attempt.id}/password`, "POST", { password });
       attempt = { ...attempt, state: "connecting", dataUrl: undefined };
     } else if (form.id === "policyForm" && cabinet) {
-      await request("/policy", "PUT", { profile, chatIds }, cabinet.csrfToken);
+      await accountRequest("/policy", "PUT", { profile, chatIds });
       clients = [];
       await refresh();
       message = "Права сохранены. Подключите AI-клиенты заново.";
     } else if (form.id === "deleteForm" && cabinet) {
-      await request("/account", "DELETE", { password }, cabinet.csrfToken);
+      await accountRequest("/account", "DELETE", { password });
       epoch++;
       clearAttempt();
       cabinet = undefined;
@@ -373,9 +413,18 @@ app.addEventListener("submit", (event) => {
 });
 window.addEventListener("focus", () => {
   if (!cabinet || isBusy || attempt || recoveryCodes.length) return;
+  const currentEpoch = epoch;
   void refresh()
-    .then(() => render())
+    .then(async () => {
+      if (currentEpoch !== epoch) {
+        render();
+        return;
+      }
+      await resumeAttempt();
+      render();
+    })
     .catch((error) => {
+      if (currentEpoch !== epoch) return;
       showError(error);
       render();
     });
@@ -390,14 +439,7 @@ async function start(): Promise<void> {
   try {
     await refresh();
     page = cabinet!.telegram.sessionPresent ? "mcp" : "telegram";
-    if (!cabinet!.telegram.sessionPresent) {
-      attempt = (await request<{ attempt?: Attempt }>("/telegram/login")).attempt;
-      if (attempt) {
-        const id = attempt.id;
-        const currentEpoch = epoch;
-        timer = window.setTimeout(() => void pollAttempt(id, currentEpoch), 200);
-      }
-    }
+    await resumeAttempt();
   } catch (error) {
     if (!(error instanceof ApiError && error.status === 401)) showError(error);
   }

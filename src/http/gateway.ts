@@ -400,9 +400,14 @@ export async function createHttpGateway(options: GatewayOptions) {
   );
   app.use("/oauth", provider.callback());
   const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="mcp:tools"`;
+  const anonymousMcpLimit = rateLimit({
+    windowMs: 60000,
+    limit: 120,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
   app.all(
     "/mcp",
-    rateLimit({ windowMs: 60000, limit: 120, standardHeaders: "draft-8", legacyHeaders: false }),
     async (req, res, next) => {
       const match = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? "");
       const token = match ? await provider.AccessToken.find(match[1]) : undefined;
@@ -415,12 +420,21 @@ export async function createHttpGateway(options: GatewayOptions) {
         !identity.isGrantValid(token.accountId, token.grantId) ||
         !(await provider.Grant.find(token.grantId))
       ) {
-        res.set("WWW-Authenticate", challenge).status(401).json({ error: "invalid_token" });
+        anonymousMcpLimit(req, res, () => {
+          res.set("WWW-Authenticate", challenge).status(401).json({ error: "invalid_token" });
+        });
         return;
       }
       res.locals.mcpIdentity = { accountId: token.accountId, grantId: token.grantId };
       next();
     },
+    rateLimit({
+      windowMs: 60000,
+      limit: 120,
+      standardHeaders: "draft-8",
+      legacyHeaders: false,
+      keyGenerator: (_req, res) => res.locals.mcpIdentity.accountId,
+    }),
     express.json({ limit: "1mb" }),
     async (req, res) => {
       await mcpHandler(req, res);

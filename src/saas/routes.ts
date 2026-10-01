@@ -63,6 +63,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
     windowMs: number,
     count: number,
     keyGenerator?: NonNullable<Parameters<typeof rateLimit>[0]>["keyGenerator"],
+    skip?: NonNullable<Parameters<typeof rateLimit>[0]>["skip"],
   ) =>
     rateLimit({
       windowMs,
@@ -70,6 +71,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       standardHeaders: "draft-8",
       legacyHeaders: false,
       keyGenerator,
+      skip,
       message: { error: "rate-limited" },
     });
   router.use((_req, res, next) => {
@@ -83,7 +85,18 @@ export function createSaasRoutes(options: Options): SaasRouter {
     }
     next();
   });
-  router.use(limit(60000, 600, () => "all"));
+  router.use((req, res, next) => {
+    res.locals.saas = auth.authenticate(saasCookie(req));
+    next();
+  });
+  router.use(
+    limit(
+      60000,
+      600,
+      () => "all",
+      (_req, res) => !!res.locals.saas,
+    ),
+  );
   const loginLimit = limit(900000, 10),
     registrationLimit = limit(3600000, 5),
     aggregateRegistration = limit(3600000, 20, () => "all");
@@ -153,7 +166,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
     res.json({ ok: true, recoveryCodes: recovered.recoveryCodes });
   });
   router.use((req, res, next) => {
-    const session = auth.authenticate(saasCookie(req));
+    const session = res.locals.saas;
     if (!session) {
       res.status(401).json({ error: "authentication-required" });
       return;
@@ -175,15 +188,17 @@ export function createSaasRoutes(options: Options): SaasRouter {
   router.use(limit(60000, 120, (_req, res) => res.locals.saas.userId));
   router.use(json);
   const mutation =
-    (work: (req: Request, res: Response, userId: string) => Promise<void>) => async (req: Request, res: Response) => {
+    (work: (req: Request, res: Response, userId: string) => Promise<void>, queue = false) =>
+    async (req: Request, res: Response) => {
       const userId = res.locals.saas.userId as string;
       let lock = locks.get(userId);
       if (!lock) {
-        lock = new GlobalLock(0);
+        lock = new GlobalLock(4);
         locks.set(userId, lock);
       }
       let release: (() => void) | undefined;
       try {
+        if (!queue && lock.isLocked()) throw new Error("Account operation already active");
         release = await lock.acquire();
         if (!auth.authenticate(saasCookie(req))) {
           res.status(401).json({ error: "authentication-required" });
@@ -243,12 +258,50 @@ export function createSaasRoutes(options: Options): SaasRouter {
       res.sendStatus(204);
     }),
   );
+  const newLoginLimit = limit(600000, 3, (_req, res) => res.locals.saas.userId);
   router.post(
     "/telegram/login",
-    limit(600000, 3, (_req, res) => res.locals.saas.userId),
-    mutation(async (_req, res, userId) => {
+    mutation(async (req, res, userId) => {
+      if (supervisor.status(userId).sessionPresent) {
+        res.status(409).json({ error: "telegram-already-connected" });
+        return;
+      }
+      const current = attempts.getCurrent(userId);
+      if (current) {
+        res.status(202).json(current);
+        return;
+      }
+      // Only the request actually starting a QR spends quota. Cold-start retries
+      // wait on the account lock, then return its newly established attempt.
+      const admitted = await new Promise<boolean>((resolve, reject) => {
+        const cleanup = () => {
+          res.off("finish", finished);
+          res.off("close", finished);
+        };
+        const finished = () => {
+          cleanup();
+          resolve(false);
+        };
+        res.once("finish", finished);
+        res.once("close", finished);
+        Promise.resolve(
+          newLoginLimit(req, res, (error?: unknown) => {
+            cleanup();
+            if (error) reject(error);
+            else resolve(true);
+          }),
+        ).catch((error) => {
+          cleanup();
+          reject(error);
+        });
+      });
+      if (!admitted) return;
+      if (!auth.authenticate(saasCookie(req))) {
+        res.status(401).json({ error: "authentication-required" });
+        return;
+      }
       res.status(202).json(await attempts.start(userId));
-    }),
+    }, true),
   );
   router.get("/telegram/login", (_req, res) => {
     res.json({ attempt: attempts.getCurrent(res.locals.saas.userId) });

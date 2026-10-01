@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Adapter } from "oidc-provider";
 
 type Payload = Record<string, unknown>;
-type Row = { data: string; expires: number | null };
+type Row = { id: string; data: string; expires: number | null };
 
 /** Persistent adapter shared by all oidc-provider models in this process. */
 export function createAdapter(
@@ -21,8 +21,14 @@ export function createAdapter(
       PRIMARY KEY (model, id)
     );
     CREATE INDEX IF NOT EXISTS oauth_grant ON oauth(grant_id);
+    CREATE INDEX IF NOT EXISTS oauth_expiry ON oauth(expires) WHERE expires IS NOT NULL;
     CREATE INDEX IF NOT EXISTS oauth_uid ON oauth(model, uid);
     CREATE INDEX IF NOT EXISTS oauth_user_code ON oauth(model, user_code);`);
+  const pruneExpired = () =>
+    db.prepare("DELETE FROM oauth WHERE expires IS NOT NULL AND expires <= ?").run(Math.floor(Date.now() / 1000));
+  pruneExpired();
+  const maintenance = setInterval(pruneExpired, 60000);
+  maintenance.unref();
 
   return class SqliteAdapter {
     constructor(private model: string) {}
@@ -44,12 +50,13 @@ export function createAdapter(
     }
 
     static close(): void {
+      clearInterval(maintenance);
       db.close();
     }
 
     async upsert(id: string, payload: Payload, expiresIn?: number): Promise<void> {
       if (!this.isAuthenticationCurrent(payload)) throw new Error("Authentication session expired");
-      db.prepare("DELETE FROM oauth WHERE expires IS NOT NULL AND expires <= ?").run(Math.floor(Date.now() / 1000));
+      pruneExpired();
       const count = db.prepare("SELECT count(*) AS n FROM oauth").get() as { n: number };
       if (count.n >= 10_000 && !(await this.find(id))) throw new Error("OAuth storage limit reached");
       const expires = expiresIn === undefined ? null : Math.floor(Date.now() / 1000) + expiresIn;
@@ -68,12 +75,20 @@ export function createAdapter(
     }
 
     private read(column: "id" | "uid" | "user_code", value: string): Payload | undefined {
-      const row = db.prepare(`SELECT data, expires FROM oauth WHERE model=? AND ${column}=?`).get(this.model, value) as
-        | Row
-        | undefined;
-      if (!row || (row.expires !== null && row.expires <= Math.floor(Date.now() / 1000))) return undefined;
+      const row = db
+        .prepare(`SELECT id, data, expires FROM oauth WHERE model=? AND ${column}=?`)
+        .get(this.model, value) as Row | undefined;
+      if (!row) return undefined;
+      if (row.expires !== null && row.expires <= Math.floor(Date.now() / 1000)) {
+        db.prepare("DELETE FROM oauth WHERE model=? AND id=?").run(this.model, row.id);
+        return undefined;
+      }
       const payload = JSON.parse(row.data) as Payload;
-      return this.isAuthenticationCurrent(payload) ? payload : undefined;
+      if (!this.isAuthenticationCurrent(payload)) {
+        db.prepare("DELETE FROM oauth WHERE model=? AND id=?").run(this.model, row.id);
+        return undefined;
+      }
+      return payload;
     }
 
     async find(id: string): Promise<Payload | undefined> {

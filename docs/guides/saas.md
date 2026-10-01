@@ -8,6 +8,8 @@ Register a cabinet with a login (3-32 Latin letters, digits or underscores) and 
 
 The server verifies `getMe` before persisting the encrypted session. All authorized MCP clients share that account's server session. Signing out of the cabinet keeps Telegram connected; disconnecting Telegram removes the stored session and OAuth grants. Account deletion requires the cabinet password and removes the account, grants and its media.
 
+Retrying a connection request returns the current QR attempt instead of starting another one. Signing into the cabinet resumes an active attempt, and temporary status failures after QR approval are retried. A linked Telegram session cannot be replaced through the connect endpoint: disconnect it explicitly first.
+
 After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Streamable HTTP transport, OAuth connection instructions and example client configurations. Users can set read-only or full access, restrict chat IDs and revoke individual clients.
 
 AI clients authenticate through the same cabinet registration/login and still need explicit OAuth consent. `prompt=login` and `max_age` require fresh authentication when applicable. Expired continuations must be restarted from the client. Existing accounts are removed for this release by the owner's explicit request; users register again.
@@ -26,6 +28,8 @@ Make the key readable by the service user and mount it read-only. Do not place i
 Back up the complete auth directory with the service and all workers stopped, and back up the encryption key separately. The auth directory contains `saas.sqlite` and `oauth/` with its database, cookie keys and OAuth signing key. SQLite WAL files are part of live storage: copying only the main database while writes continue is unsafe. Restore the consistent auth snapshot, matching service configuration and stable encryption key together.
 
 Server Telegram sessions are encrypted with AES-256-GCM, including the user ID as authenticated data. Browser session tokens and recovery codes are stored as hashes. Passwords use scrypt. No owner grants or owner `.telegram-session` file are implicitly imported into SaaS.
+
+Expired OAuth rows are pruned at startup, on writes and every minute while idle. Credential-stale authentication records are discarded when read. Active client registrations remain stored; they are protocol configuration rather than Telegram account data.
 
 ## Capacity and lifecycle
 
