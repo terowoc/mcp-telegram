@@ -3,6 +3,7 @@ import type { McpRegisteredTool } from "../ipc-protocol.js";
 import type { TelegramService } from "../telegram-client.js";
 import type { ToolPolicy } from "../tool-policy.js";
 import { registerTools } from "../tools/index.js";
+import { DIRECT_UPLOAD_TOOL, directUploadDefinition } from "./direct-media-upload.js";
 
 // Build immutable schemas once; SDK registries, callbacks and transports stay request-local.
 const template = new McpServer({ name: "hosted-tool-catalog", version: "1" });
@@ -12,7 +13,7 @@ const catalog = Object.entries(
 ).map(([name, tool]) => ({ name, tool }));
 void template.close();
 
-export function registerHostedTools(server: McpServer, policy: ToolPolicy): void {
+export function registerHostedTools(server: McpServer, policy: ToolPolicy, enableDirectUploads = false): void {
   for (const { name, tool } of catalog) {
     if (!policy.visible(name, tool as unknown as McpRegisteredTool)) continue;
     server.registerTool(
@@ -30,4 +31,8 @@ export function registerHostedTools(server: McpServer, policy: ToolPolicy): void
       },
     );
   }
+  if (enableDirectUploads && policy.visible(DIRECT_UPLOAD_TOOL, directUploadDefinition as unknown as McpRegisteredTool))
+    server.registerTool(DIRECT_UPLOAD_TOOL, directUploadDefinition, async () => {
+      throw new Error("Hosted upload link proxy is not configured");
+    });
 }

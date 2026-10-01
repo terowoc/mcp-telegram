@@ -84,6 +84,16 @@ Storage remains schema version 3 for coherent rollback. Back up the full stopped
 
 ## Sending files from AI clients
 
+### Direct transfer from Claude.ai code execution
+
+Enable code execution and network access to your MCP server's domain in Claude's capabilities settings. When available, the hosted gateway exposes `telegram-create-media-upload`: Claude computes the actual file's name, size and SHA-256 in Python, then calls the tool with that small metadata object. This tool returns an HTTPS upload URL, temporary authorization headers and `pythonCode`. Run that code with `file_path` changed to the actual sandbox file. It transfers binary chunks directly; the model never needs to copy base64.
+
+Each `PUT` carries at most 512 KiB and `Upload-Offset` equal to the preceding response's `receivedBytes`, so the existing 1 MiB reverse-proxy limit remains sufficient. The gateway checks the complete SHA-256 before marking the file ready. Use the returned `fileId` with the Telegram send tool only after `ready:true`. Identical retries of the most recent chunk are safe; `GET uploadUrl` with the same authorization header returns status if a response was lost. Uploading does not send a Telegram message.
+
+The temporary authorization permits one file of at most 20 MiB, expires after five minutes and remains bound to the account and OAuth grant. Read-only accounts cannot create links. Revoked grants, policy changes, disconnects and shutdown stop transfers; expired links must be recreated. An interrupted upload may leave an incomplete account-scoped file until normal cleanup. If Claude's network settings prohibit this domain, the sandbox cannot transfer the file directly. A sandbox path alone still cannot transfer a file, and a file that no longer exists must first be recovered or recreated in the client.
+
+### Native attachments, URLs and byte uploads
+
 The hosted server cannot read the AI app's sandbox or your computer's filesystem. Provide exactly one source when sending media: a native conversation `file`, a completed `fileId`, a public HTTPS `fileUrl`, or an absolute `filePath` already inside your account's server directory. This applies to files, voice notes, round video notes, album items, stories and profile photos; group photos retain `photoPath` for their local-path option.
 
 For ChatGPT, these tools advertise `openai/fileParams` so the client can supply an attachment directly. The client fills `file` with `download_url` and `file_id`, plus optional `file_name` and `mime_type`; the server downloads its bytes into the account's media directory before sending. The client file ID is not a `telegram-upload-media` handle. Albums accept native attachments in the top-level `files` array. Clients that do not support native attachment parameters must provide actual bytes or a downloadable URL; a sandbox path alone cannot transfer a file.

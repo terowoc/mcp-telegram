@@ -215,6 +215,28 @@ describe("authenticated HTTPS gateway contract", () => {
     assert.equal(list.status, 200, await list.clone().text());
     const tools = await list.json();
     assert.ok(tools.result.tools.some((tool: { name: string }) => tool.name === "telegram-status"));
+    assert.ok(tools.result.tools.some((tool: { name: string }) => tool.name === "telegram-create-media-upload"));
+    const linkResponse = await request("/mcp", {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 23,
+        method: "tools/call",
+        params: {
+          name: "telegram-create-media-upload",
+          arguments: {
+            fileName: "image.png",
+            sizeBytes: 1,
+            sha256: createHash("sha256").update("x").digest("hex"),
+          },
+        },
+      }),
+    });
+    const uploadTicket = (await linkResponse.json()).result.structuredContent;
+    const uploadPath = new URL(uploadTicket.uploadUrl).pathname;
+    assert.equal((await request(uploadPath)).status, 401);
+    assert.equal((await request(uploadPath, { headers: uploadTicket.headers })).status, 200);
     const batch = await request("/mcp", {
       method: "POST",
       headers: mcpHeaders,
@@ -266,6 +288,11 @@ describe("authenticated HTTPS gateway contract", () => {
       form({ ...values, client_id: fresh.client.client_id, code: fresh.code, code_verifier: fresh.verifier }),
     );
     assert.equal(reused.status, 400);
+    assert.equal(
+      (await request(uploadPath, { headers: uploadTicket.headers })).status,
+      403,
+      "OAuth grant revocation must also revoke direct uploads",
+    );
     // Code reuse can revoke the grant; get another grant for refresh/revocation checks.
     const third = await authorize();
     const thirdTokens = await (

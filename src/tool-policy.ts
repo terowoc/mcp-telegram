@@ -3,7 +3,7 @@ import type { McpRegisteredTool, McpServerInternal } from "./ipc-protocol.js";
 const ADMIN = new Set(["telegram-status", "telegram-login", "telegram-logout", "telegram-doctor"]);
 const ENUMERATION = new Set(["telegram-list-chats", "telegram-get-unread", "telegram-inbox"]);
 // File staging touches only this account's private storage, never Telegram chats.
-const LOCAL_MEDIA = new Set(["telegram-upload-media"]);
+const LOCAL_MEDIA = new Set(["telegram-upload-media", "telegram-create-media-upload"]);
 // Explicit scope contracts: new tools stay unavailable under a chat allowlist until reviewed.
 const SCOPED = new Set([
   "telegram-read-messages",
