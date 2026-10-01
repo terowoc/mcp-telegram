@@ -13,6 +13,11 @@ export const DIRECT_UPLOAD_MAX_BYTES = 20 * 1048576;
 const PATH_PREFIX = "/media/uploads/";
 export const directUploadPath = (path: string) => /^\/media\/uploads\/[a-f0-9-]{36}$/.test(path);
 export const directUploadSchema = z.object({
+  telegramAccountId: z
+    .string()
+    .uuid()
+    .optional()
+    .describe("Connection ID from telegram-list-accounts; omit for primary"),
   fileName: z.string().min(1).max(200).describe("Original basename with extension"),
   sizeBytes: z
     .number()
@@ -74,22 +79,22 @@ export class DirectMediaUploads {
     for (const [token, ticket] of this.tickets)
       if (ticket.expiresAt <= this.now() && ticket.state !== "uploading") this.tickets.delete(token);
   }
-  private async allowed(accountId: string, grantId: string) {
+  private async allowed(accountId: string, grantId: string, selected?: string) {
     const { identity } = this.options;
     if (
       this.closed ||
       !identity.isActive(accountId) ||
       !identity.isGrantValid(accountId, grantId) ||
       !identity
-        .toolPolicy(accountId)
+        .toolPolicy(accountId, selected ?? accountId)
         .visible(DIRECT_UPLOAD_TOOL, directUploadDefinition as unknown as McpRegisteredTool) ||
       (this.options.validateGrant && !(await this.options.validateGrant(grantId)))
     )
       throw new Error("Media upload access revoked or unavailable");
   }
   async create(accountId: string, grantId: string, input: unknown) {
-    await this.allowed(accountId, grantId);
     const args = directUploadSchema.parse(input);
+    await this.allowed(accountId, grantId, args.telegramAccountId);
     validateMediaName(args.fileName);
     this.prune();
     if (
@@ -121,7 +126,7 @@ export class DirectMediaUploads {
       maxChunkBytes: MEDIA_CHUNK_BYTES,
       pythonCode: uploadPythonCode(`${this.options.origin}${PATH_PREFIX}${uploadId}`, `Bearer ${token}`),
       instructions:
-        "Use code execution to read the file and PUT original binary chunks of at most maxChunkBytes to uploadUrl with the returned headers and Upload-Offset equal to receivedBytes (first is zero). Parse each response before advancing. Only send the fileId after ready=true; the final chunk verifies the total size and SHA-256. Print only the JSON response, never base64. Use its completed fileId with the Telegram send tool. GET uploadUrl with the same Authorization header retrieves status if the PUT response is lost. Allow network access to this server's domain if needed. This upload authorization expires in five minutes and permits one upload.",
+        "Use code execution to read the file and PUT original binary chunks of at most maxChunkBytes to uploadUrl with the returned headers and Upload-Offset equal to receivedBytes (first is zero). Parse each response before advancing. Only send the fileId after ready=true; the final chunk verifies the total size and SHA-256. Print only the JSON response, never base64. Use its completed fileId with the Telegram send tool and the SAME telegramAccountId used to create this link (omit only for primary). GET uploadUrl with the same Authorization header retrieves status if the PUT response is lost. Allow network access to this server's domain if needed. This upload authorization expires in five minutes and permits one upload.",
     };
   }
   mount(app: Express) {
@@ -145,7 +150,7 @@ export class DirectMediaUploads {
           return;
         }
         try {
-          await this.allowed(ticket.accountId, ticket.grantId);
+          await this.allowed(ticket.accountId, ticket.grantId, ticket.telegramAccountId);
         } catch {
           res.status(403).json({ error: "Media upload access revoked" });
           return;
@@ -239,12 +244,13 @@ export class DirectMediaUploads {
       }
       controller.signal.throwIfAborted();
       if (ticket.expiresAt <= this.now()) throw new Error("Upload authorization expired");
-      await this.allowed(ticket.accountId, ticket.grantId);
+      await this.allowed(ticket.accountId, ticket.grantId, ticket.telegramAccountId);
       staging = true;
       const response = (await this.options.identity.callTool(
         ticket.accountId,
         "telegram-upload-media",
         {
+          ...(ticket.telegramAccountId ? { telegramAccountId: ticket.telegramAccountId } : {}),
           fileName: ticket.result ? undefined : ticket.fileName,
           fileId: ticket.result?.fileId,
           offset,
@@ -255,7 +261,7 @@ export class DirectMediaUploads {
       )) as { isError?: boolean; structuredContent?: MediaResult };
       if (response.isError || !response.structuredContent)
         throw new Error("Media staging failed; create a new upload authorization");
-      await this.allowed(ticket.accountId, ticket.grantId);
+      await this.allowed(ticket.accountId, ticket.grantId, ticket.telegramAccountId);
       ticket.hash = nextHash;
       ticket.receivedBytes = offset + size;
       ticket.result = response.structuredContent;

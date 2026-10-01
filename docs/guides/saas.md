@@ -127,3 +127,10 @@ For larger files, encode each chunk separately as standard base64. Each chunk ma
 Files retain their original names and extensions. Photos and videos use automatic detection; `mediaType:"document"` sends the original bytes as an attachment. The default per-file limit is 20 MiB. Account and aggregate disk quotas apply to staging as well as downloads. File handles are private to the authenticated account, survive worker restarts and expire after one hour. The gateway removes expired files at startup and every five minutes, with a one-minute grace period for active sends. Account deletion also removes staged files.
 
 Use direct download URLs, including signed HTTPS URLs. HTML sharing pages, AI-only `sandbox:` links, private addresses and redirects into private networks are rejected. If an AI app exposes neither bytes nor a downloadable URL, its sandbox attachment cannot be transferred by the MCP tool alone; the client must make one of those sources available. Read-only access disables uploads and sending. After updating the server, reconnect the AI client to refresh its tool schemas.
+
+
+## Multiple Telegram connections
+
+The hosted cabinet supports up to five isolated Telegram connections per cabinet. See [Multiple Accounts](./multiple-accounts.md) for QR/2FA setup, account-specific permissions, explicit AI sender selection and removal recovery. `telegram-list-accounts` and the optional `telegramAccountId` selector are SaaS-only; stdio and owner HTTP retain their single-session behavior.
+
+OAuth pages declare an explicit script policy so oidc-provider can authorize its automatic form submission through an exact SHA-256 hash. Registered callback origins are allowed for form POST responses. Cloudflare's analytics script and ingestion host are explicitly permitted on cabinet/OAuth pages; arbitrary inline scripts remain blocked.

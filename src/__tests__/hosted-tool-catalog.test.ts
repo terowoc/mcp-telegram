@@ -66,3 +66,30 @@ test("request registries and handlers remain isolated while schemas are reused",
   assert.equal(tools(b)["telegram-send-message"], undefined);
   await Promise.all([a.close(), b.close()]);
 });
+
+test("SaaS catalog offers explicit account selection without changing stdio schemas or native file metadata", async () => {
+  const server = new McpServer({ name: "accounts", version: "test" });
+  registerHostedTools(server, new ToolPolicy({ profile: "full" }), true, true);
+  const selected = "11111111-1111-4111-8111-111111111111";
+  const file = tools(server)["telegram-send-file"];
+  assert.ok(file.inputSchema);
+  const parsed = await file.inputSchema.safeParseAsync({
+    telegramAccountId: selected,
+    chatId: "me",
+    fileId: "media_11111111-1111-4111-8111-111111111111",
+  });
+  assert.equal(parsed.success, true);
+  assert.equal((parsed as { data: Record<string, unknown> }).data.telegramAccountId, selected);
+  assert.deepEqual(file._meta, { "openai/fileParams": ["file"] });
+  assert.ok(tools(server)["telegram-list-accounts"]);
+  const schema = tools(server)["telegram-create-media-upload"].inputSchema;
+  assert.ok(schema);
+  const upload = await schema.safeParseAsync({
+    telegramAccountId: selected,
+    fileName: "a.jpg",
+    sizeBytes: 1,
+    sha256: "0".repeat(64),
+  });
+  assert.equal((upload as { data: Record<string, unknown> }).data.telegramAccountId, selected);
+  await server.close();
+});

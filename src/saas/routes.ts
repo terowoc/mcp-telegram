@@ -53,8 +53,11 @@ export function createSaasRoutes(options: Options): SaasRouter {
       /* DB markers already revoked; provider cleanup is best effort */
     }
   };
-  const invalidate = (userId: string) => {
-    const ids = store.revokeUserGrants(userId);
+  const invalidate = (accountId: string) => {
+    const ownerId = store.connectionOwner(accountId);
+    const user = store.findUser(ownerId);
+    if (!user || user.disabled) return;
+    const ids = store.revokeUserGrants(ownerId);
     void cleanupGrants(ids);
   };
   const attempts = options.attempts ?? new LoginAttempts(supervisor, { onLinked: invalidate });
@@ -158,9 +161,11 @@ export function createSaasRoutes(options: Options): SaasRouter {
       return;
     }
     if (user) {
-      const stopping = supervisor.stopUser(user.id);
-      await attempts.clearUser(user.id);
-      await stopping;
+      for (const connection of store.listTelegramConnections(user.id)) {
+        const stopping = supervisor.stopUser(connection.id);
+        await attempts.clearUser(connection.id);
+        await stopping;
+      }
       await cleanupGrants(ids);
     }
     clearCookie(res);
@@ -188,6 +193,16 @@ export function createSaasRoutes(options: Options): SaasRouter {
   });
   router.use(limit(60000, 120, (_req, res) => res.locals.saas.userId));
   router.use(json);
+  router.use((req, res, next) => {
+    const owner = res.locals.saas.userId as string;
+    const selected = req.query.telegramAccountId ?? owner;
+    if (typeof selected !== "string" || !store.ownsTelegramConnection(owner, selected)) {
+      res.status(404).json({ error: "not-found" });
+      return;
+    }
+    res.locals.telegramAccountId = selected;
+    next();
+  });
   const mutation =
     (work: (req: Request, res: Response, userId: string) => Promise<void>, queue = false) =>
     async (req: Request, res: Response) => {
@@ -205,7 +220,18 @@ export function createSaasRoutes(options: Options): SaasRouter {
           res.status(401).json({ error: "authentication-required" });
           return;
         }
-        await work(req, res, userId);
+        const selected = res.locals.telegramAccountId as string;
+        if (!store.ownsTelegramConnection(userId, selected)) {
+          res.status(404).json({ error: "not-found" });
+          return;
+        }
+        await work(
+          req,
+          res,
+          (req.path.startsWith("/telegram/") && !req.path.startsWith("/telegram/accounts")) || req.path === "/policy"
+            ? selected
+            : userId,
+        );
       } catch (error) {
         if (error instanceof CapacityError) {
           res.set("Retry-After", String(error.retryAfter)).status(503).json({ error: "capacity" });
@@ -228,11 +254,25 @@ export function createSaasRoutes(options: Options): SaasRouter {
       res.sendStatus(401);
       return;
     }
+    const selectedUser = store.findUser(res.locals.telegramAccountId);
+    if (!selectedUser || selectedUser.disabled) {
+      res.status(404).json({ error: "not-found" });
+      return;
+    }
     res.json({
       user: { id: user.id, login: user.login, hasPassword: !!user.passwordHash },
       csrfToken: session.csrfToken,
-      policy: user.policy,
-      telegram: supervisor.status(user.id),
+      telegramAccountId: res.locals.telegramAccountId,
+      accounts: store.listTelegramConnections(user.id, true).map((connection) => ({
+        removalPending: connection.disabled,
+        id: connection.id,
+        label: connection.label,
+        primary: connection.primary,
+        policy: connection.policy,
+        telegram: supervisor.status(connection.id),
+      })),
+      policy: selectedUser.policy,
+      telegram: supervisor.status(res.locals.telegramAccountId),
       mcpUrl: `${origin}/mcp`,
     });
   });
@@ -254,8 +294,77 @@ export function createSaasRoutes(options: Options): SaasRouter {
     "/logout",
     mutation(async (_req, res, userId) => {
       auth.logout(saasCookie(_req));
-      await attempts.clearUser(userId);
+      for (const connection of store.listTelegramConnections(userId)) await attempts.clearUser(connection.id);
       clearCookie(res);
+      res.sendStatus(204);
+    }),
+  );
+  const labelSchema = z.object({ label: z.string().trim().min(1).max(80) });
+  const connections = (ownerId: string) =>
+    store.listTelegramConnections(ownerId, true).map((connection) => ({
+      removalPending: connection.disabled,
+      id: connection.id,
+      label: connection.label,
+      primary: connection.primary,
+      policy: connection.policy,
+      telegram: supervisor.status(connection.id),
+    }));
+  router.get("/telegram/accounts", (_req, res) => res.json({ accounts: connections(res.locals.saas.userId) }));
+  router.post(
+    "/telegram/accounts",
+    mutation(async (req, res, ownerId) => {
+      const parsed = labelSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid-account-label" });
+        return;
+      }
+      try {
+        const account = store.createTelegramConnection(ownerId, parsed.data.label);
+        invalidate(ownerId);
+        res.status(201).json({ account: connections(ownerId).find((connection) => connection.id === account.id) });
+      } catch (error) {
+        if (error instanceof Error && /capacity/i.test(error.message)) {
+          res.status(409).json({ error: "account-capacity" });
+          return;
+        }
+        throw error;
+      }
+    }),
+  );
+  router.patch(
+    "/telegram/accounts/:accountId",
+    mutation(async (req, res, ownerId) => {
+      const id = String(req.params.accountId);
+      if (!store.ownsTelegramConnection(ownerId, id)) {
+        res.status(404).json({ error: "not-found" });
+        return;
+      }
+      const parsed = labelSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid-account-label" });
+        return;
+      }
+      store.renameTelegramConnection(ownerId, id, parsed.data.label);
+      res.json({ account: connections(ownerId).find((connection) => connection.id === id) });
+    }),
+  );
+  router.delete(
+    "/telegram/accounts/:accountId",
+    mutation(async (req, res, ownerId) => {
+      const id = String(req.params.accountId);
+      if (!store.ownsTelegramConnection(ownerId, id, true)) {
+        res.status(404).json({ error: "not-found" });
+        return;
+      }
+      if (id === ownerId) {
+        res.status(409).json({ error: "primary-account-required" });
+        return;
+      }
+      invalidate(ownerId);
+      store.requestConnectionDeletion(id); // blocks new requests and late worker saves before draining
+      await stopAccess(id, []);
+      await options.purgeUserFiles?.(id);
+      store.deleteUser(id);
       res.sendStatus(204);
     }),
   );
@@ -305,10 +414,10 @@ export function createSaasRoutes(options: Options): SaasRouter {
     }, true),
   );
   router.get("/telegram/login", (_req, res) => {
-    res.json({ attempt: attempts.getCurrent(res.locals.saas.userId) });
+    res.json({ attempt: attempts.getCurrent(res.locals.telegramAccountId) });
   });
   router.get("/telegram/login/:attemptId", (req, res) => {
-    const attempt = attempts.get(res.locals.saas.userId, String(req.params.attemptId));
+    const attempt = attempts.get(res.locals.telegramAccountId, String(req.params.attemptId));
     if (!attempt) {
       res.status(404).json({ error: "not-found" });
       return;
@@ -383,8 +492,10 @@ export function createSaasRoutes(options: Options): SaasRouter {
         res.status(400).json({ error: "invalid-policy" });
         return;
       }
-      const ids = store.listGrants(userId).map((g) => g.grantId);
+      const ownerId = res.locals.saas.userId as string;
+      const ids = store.listGrants(ownerId).map((g) => g.grantId);
       const version = store.updatePolicy(userId, { ...parsed.data, version: 0 });
+      if (userId !== ownerId) invalidate(ownerId);
       await stopAccess(userId, ids);
       res.json({ policy: { ...parsed.data, version } });
     }),
@@ -392,7 +503,9 @@ export function createSaasRoutes(options: Options): SaasRouter {
   router.post(
     "/telegram/disconnect",
     mutation(async (_req, res, userId) => {
-      const ids = store.revokeUserGrants(userId);
+      const ownerId = res.locals.saas.userId as string;
+      const ids = store.listGrants(ownerId).map((g) => g.grantId);
+      invalidate(ownerId);
       store.deleteEncryptedSession(userId);
       await stopAccess(userId, ids);
       res.sendStatus(204);
@@ -429,10 +542,12 @@ export function createSaasRoutes(options: Options): SaasRouter {
         return;
       }
       const ids = store.listGrants(userId).map((g) => g.grantId);
-      store.disableUser(userId);
-      await stopAccess(userId, ids);
-      await options.purgeUserFiles?.(userId);
-      store.deleteUser(userId);
+      const owned = store.requestCabinetDeletion(userId);
+      for (const id of [...owned].reverse()) {
+        await stopAccess(id, id === userId ? ids : []);
+        await options.purgeUserFiles?.(id);
+        store.deleteUser(id);
+      }
       clearCookie(res);
       res.sendStatus(204);
     }),

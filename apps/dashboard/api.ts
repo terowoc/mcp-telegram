@@ -3,6 +3,15 @@ export interface Cabinet {
   csrfToken: string;
   policy: { profile: "read" | "full"; chatIds: string[]; version: number };
   telegram: { state: string; busy: boolean; sessionPresent: boolean; account?: { id: string; username?: string } };
+  telegramAccountId?: string;
+  accounts?: Array<{
+    id: string;
+    label: string;
+    primary: boolean;
+    removalPending?: boolean;
+    policy: Cabinet["policy"];
+    telegram: Cabinet["telegram"];
+  }>;
   mcpUrl: string;
 }
 export interface Client {

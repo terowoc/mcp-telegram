@@ -57,6 +57,15 @@ export interface SaasMe {
     sessionPresent: boolean;
     account?: { id: string; username?: string };
   };
+  telegramAccountId: string;
+  accounts: Array<{
+    id: string;
+    label: string;
+    primary: boolean;
+    removalPending?: boolean;
+    policy: UserPolicy;
+    telegram: SaasMe["telegram"];
+  }>;
   mcpUrl: string;
 }
 export interface SaasClient {

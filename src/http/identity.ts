@@ -7,9 +7,9 @@ export interface GatewayIdentity {
   findAccount(id: string, grantId?: string): { accountId: string; claims: () => Promise<{ sub: string }> } | undefined;
   authenticate(credentials: { login?: string; password: string }): Promise<string | undefined>;
   isActive(id: string): boolean;
-  bindGrant(accountId: string, grantId: string, clientId: string): void;
+  bindGrant(accountId: string, grantId: string, clientId: string, consentBinding?: string): void;
   isGrantValid(accountId: string, grantId: string): boolean;
-  toolPolicy(accountId: string): ToolPolicy;
+  toolPolicy(accountId: string, telegramAccountId?: string): ToolPolicy;
   callTool(
     accountId: string,
     name: string,

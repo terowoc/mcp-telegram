@@ -1,4 +1,6 @@
+import { ACCOUNT_LIST_TOOL } from "../http/account-tools.js";
 import type { GatewayIdentity } from "../http/identity.js";
+import { hostedToolVisible } from "../http/tool-catalog.js";
 import type { McpRegisteredTool } from "../ipc-protocol.js";
 import { ToolPolicy } from "../tool-policy.js";
 import { hashOpaqueToken, type SaasAuth } from "./auth.js";
@@ -8,16 +10,16 @@ import type { SaasStore } from "./store.js";
 import type { WorkerSupervisor } from "./supervisor.js";
 
 class SaasToolPolicy extends ToolPolicy {
-  constructor(
-    private connected: boolean,
-    options: ConstructorParameters<typeof ToolPolicy>[0],
-  ) {
-    super(options);
+  constructor(private policies: ToolPolicy[]) {
+    super({ profile: "full", chatIds: [] });
   }
   override visible(name: string, tool: McpRegisteredTool): boolean {
     if (name === "telegram-login" || name === "telegram-logout") return false;
-    if (!this.connected) return name === "telegram-status";
-    return super.visible(name, tool);
+    return (
+      name === "telegram-status" ||
+      name === ACCOUNT_LIST_TOOL ||
+      this.policies.some((policy) => policy.visible(name, tool))
+    );
   }
 }
 export function createSaasIdentity(
@@ -39,6 +41,20 @@ export function createSaasIdentity(
       ? `urn:tg-bridge:credential:${hashOpaqueToken(user.credentialVersion === 0 && user.passwordHash ? user.passwordHash : `${user.id}:${user.credentialVersion}`)}`
       : undefined;
   };
+  const consent = (id?: string) => {
+    const user = id ? active(id) : undefined;
+    return user
+      ? JSON.stringify(
+          store.listTelegramConnections(user.id).map((connection) => ({
+            id: connection.id,
+            label: connection.label,
+            policy: connection.policy,
+            account: store.getTelegramAccount(connection.id),
+            connected: !!store.getEncryptedSession(connection.id),
+          })),
+        )
+      : "inactive";
+  };
   return {
     kind: "saas",
     isActive: (id) => !!active(id),
@@ -52,7 +68,9 @@ export function createSaasIdentity(
       auth.logout(session.sessionToken);
       return session.userId;
     },
-    bindGrant: (id, grantId, clientId) => {
+    bindGrant: (id, grantId, clientId, expectedConsent) => {
+      if (expectedConsent !== undefined && expectedConsent !== consent(id))
+        throw new Error("Consent changed; reconnect the client");
       const user = active(id);
       if (!user) throw new Error("Inactive account");
       const existing = store.findGrant(grantId);
@@ -63,25 +81,56 @@ export function createSaasIdentity(
       }
       store.bindGrant(id, grantId, clientId, user.policy.version);
     },
-    toolPolicy: (id) => {
-      const user = active(id);
-      if (!user) throw new Error("Inactive account");
-      return new SaasToolPolicy(!!store.getEncryptedSession(id), user.policy);
+    toolPolicy: (id, selected) => {
+      if (!active(id)) throw new Error("Inactive account");
+      if (selected !== undefined) {
+        if (!store.ownsTelegramConnection(id, selected)) throw new Error("Telegram account unavailable");
+        const user = active(selected);
+        if (!user) throw new Error("Inactive account");
+        return new SaasToolPolicy(store.getEncryptedSession(selected) ? [new ToolPolicy(user.policy)] : []);
+      }
+      return new SaasToolPolicy(
+        store
+          .listTelegramConnections(id)
+          .filter((user) => store.getEncryptedSession(user.id))
+          .map((user) => new ToolPolicy(user.policy)),
+      );
     },
     callTool: async (id, name, args, options) => {
       if (!active(id)) throw new Error("Inactive account");
-      if (!store.getEncryptedSession(id)) {
-        if (name !== "telegram-status") throw new Error("Telegram setup required");
+      if (name === ACCOUNT_LIST_TOOL) {
+        const accounts = store.listTelegramConnections(id).map((user) => ({
+          id: user.id,
+          label: user.label,
+          primary: user.primary,
+          connected: !!store.getEncryptedSession(user.id),
+          account: store.getTelegramAccount(user.id),
+          policy: user.policy,
+        }));
         return {
-          content: [{ type: "text", text: "Not connected. Open your Telegram MCP cabinet to connect Telegram." }],
+          content: [{ type: "text", text: JSON.stringify({ accounts, defaultAccountId: id }) }],
+          structuredContent: { accounts, defaultAccountId: id },
         };
       }
-      return supervisor.call(id, name, args, options);
+      const { telegramAccountId, ...workerArgs } = args;
+      const selected = telegramAccountId === undefined ? id : telegramAccountId;
+      if (typeof selected !== "string" || !store.ownsTelegramConnection(id, selected))
+        throw new Error("Telegram account unavailable");
+      if (name === "telegram-login" || name === "telegram-logout")
+        throw new Error("Use the cabinet to connect Telegram accounts");
+      if (!store.getEncryptedSession(selected)) {
+        if (name !== "telegram-status") throw new Error("Telegram setup required for the selected account");
+        return {
+          content: [{ type: "text", text: "Not connected. Open your Telegram MCP cabinet to connect this account." }],
+        };
+      }
+      const selectedUser = active(selected);
+      if (!selectedUser) throw new Error("Inactive account");
+      if (!hostedToolVisible(new ToolPolicy(selectedUser.policy), name))
+        throw new Error("Tool unavailable under selected account policy");
+      return supervisor.call(selected, name, workerArgs, options);
     },
-    consentBinding: (id) => {
-      const user = id ? active(id) : undefined;
-      return user ? `${user.id}:${user.policy.version}` : "inactive";
-    },
+    consentBinding: consent,
     authenticationBinding: binding,
     browserAuthentication: (cookieHeader) => {
       const session = auth.authenticate(readCookie(cookieHeader, SAAS_COOKIE));
@@ -93,7 +142,13 @@ export function createSaasIdentity(
     describeAccess: (id) => {
       const user = id ? active(id) : undefined;
       if (!user) return "Доступ к Telegram вашего аккаунта. Разрешения задаются в разделе MCP.";
-      return `${user.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"} Telegram. ${user.policy.chatIds.length ? `Разрешённые чаты: ${user.policy.chatIds.join(", ")}` : "Все чаты аккаунта"}.`;
+      return store
+        .listTelegramConnections(user.id)
+        .map(
+          (connection) =>
+            `${connection.label}: ${connection.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"} Telegram. ${connection.policy.chatIds.length ? `Разрешённые чаты: ${connection.policy.chatIds.join(", ")}` : "Все чаты аккаунта"}.`,
+        )
+        .join(" ");
     },
   };
 }

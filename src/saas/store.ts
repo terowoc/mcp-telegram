@@ -38,7 +38,7 @@ export class SaasStore {
     try {
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
       const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-      if (version.user_version > 3) throw new Error("Unsupported SaaS database version");
+      if (version.user_version > 4) throw new Error("Unsupported SaaS database version");
       this.db.exec("PRAGMA foreign_keys=OFF");
       this.db.exec("BEGIN IMMEDIATE");
       this.db.exec(`
@@ -79,7 +79,14 @@ export class SaasStore {
       this.db.exec(`CREATE TABLE IF NOT EXISTS telegram_identities (
         telegram_id TEXT PRIMARY KEY,user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE);`);
       if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Invalid SaaS foreign keys");
-      this.db.exec("PRAGMA user_version=3; COMMIT; PRAGMA foreign_keys=ON;");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS telegram_connections (
+        account_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        label TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS telegram_connection_owner ON telegram_connections(owner_id);
+      CREATE TABLE IF NOT EXISTS pending_account_deletions (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE);
+      PRAGMA user_version=4; COMMIT; PRAGMA foreign_keys=ON;`);
     } catch (error) {
       this.db.close();
       throw error;
@@ -115,6 +122,86 @@ export class SaasStore {
     const user = this.findUser(userId);
     if (!user || user.disabled) throw new Error("User is inactive");
     return user;
+  }
+
+  connectionOwner(accountId: string): string {
+    return (
+      (
+        this.db.prepare("SELECT owner_id FROM telegram_connections WHERE account_id=?").get(accountId) as
+          | { owner_id: string }
+          | undefined
+      )?.owner_id ?? accountId
+    );
+  }
+
+  ownsTelegramConnection(ownerId: string, accountId: string, includeDisabled = false): boolean {
+    return (
+      this.connectionOwner(accountId) === ownerId &&
+      !!this.findUser(accountId) &&
+      (includeDisabled || !this.findUser(accountId)?.disabled)
+    );
+  }
+
+  listTelegramConnections(
+    ownerId: string,
+    includeDisabled = false,
+  ): Array<UserRecord & { label: string; primary: boolean }> {
+    const owner = this.active(ownerId);
+    if (this.connectionOwner(ownerId) !== ownerId) throw new Error("Cabinet owner required");
+    const rows = this.db
+      .prepare(
+        "SELECT u.*,c.label FROM users u JOIN telegram_connections c ON u.id=c.account_id WHERE c.owner_id=? AND (?=1 OR u.disabled=0) ORDER BY c.rowid",
+      )
+      .all(ownerId, includeDisabled ? 1 : 0) as Array<UserRow & { label: string }>;
+    return [
+      { ...owner, label: "Основной", primary: true },
+      ...rows.map((row) => {
+        const user = this.user(row);
+        if (!user) throw new Error("Connection record unavailable");
+        return { ...user, label: row.label, primary: false };
+      }),
+    ];
+  }
+
+  createTelegramConnection(ownerId: string, label: string): UserRecord {
+    return this.transaction(() => {
+      const accounts = this.listTelegramConnections(ownerId, true);
+      if (accounts.length >= 5) throw new Error("Telegram account capacity reached");
+      if (typeof label !== "string" || !label.trim() || label.trim().length > 80)
+        throw new Error("Invalid account label");
+      const count = this.db.prepare("SELECT count(*) AS n FROM users").get() as { n: number };
+      if (count.n >= this.maxUsers) throw new Error("Account capacity reached");
+      const id = randomUUID(),
+        login = `conn_${id.replaceAll("-", "").slice(0, 27)}`;
+      this.db
+        .prepare("INSERT INTO users(id,login,policy) VALUES(?,?,?)")
+        .run(id, login, JSON.stringify({ profile: "full", chatIds: [], version: 1 }));
+      this.db
+        .prepare("INSERT INTO telegram_connections(account_id,owner_id,label) VALUES(?,?,?)")
+        .run(id, ownerId, label.trim());
+      return this.active(id);
+    });
+  }
+
+  renameTelegramConnection(ownerId: string, accountId: string, label: string): void {
+    if (accountId === ownerId || !this.ownsTelegramConnection(ownerId, accountId))
+      throw new Error("Connection unavailable");
+    if (typeof label !== "string" || !label.trim() || label.trim().length > 80)
+      throw new Error("Invalid account label");
+    this.db
+      .prepare("UPDATE telegram_connections SET label=? WHERE account_id=? AND owner_id=?")
+      .run(label.trim(), accountId, ownerId);
+  }
+
+  private checkTelegramConnectionIdentity(userId: string, account: TelegramAccount): void {
+    if (!/^[1-9]\d{0,19}$/.test(account.id)) throw new Error("Invalid Telegram identity");
+    const owner = this.connectionOwner(userId);
+    const duplicate = this.db
+      .prepare(`SELECT s.user_id FROM telegram_sessions s
+      WHERE s.user_id<>? AND json_extract(s.account_json,'$.id')=?
+      AND (s.user_id=? OR s.user_id IN (SELECT account_id FROM telegram_connections WHERE owner_id=?))`)
+      .get(userId, account.id, owner, owner);
+    if (duplicate) throw new Error("Telegram account already added");
   }
 
   register(login: string, passwordHash: string, recoveryHashes: string[]): UserRecord {
@@ -173,6 +260,7 @@ export class SaasStore {
     authenticatedAt = Date.now(),
   ): void {
     this.active(userId);
+    if (this.connectionOwner(userId) !== userId) throw new Error("Cabinet owner required");
     this.db.prepare("DELETE FROM browser_sessions WHERE expires_at<=?").run(Date.now());
     this.db
       .prepare("INSERT INTO browser_sessions(id_hash,user_id,csrf_hash,expires_at,authenticated_at) VALUES(?,?,?,?,?)")
@@ -225,6 +313,7 @@ export class SaasStore {
 
   putTelegramAccount(userId: string, account: { id: string; username?: string }): void {
     this.active(userId);
+    this.checkTelegramConnectionIdentity(userId, account);
     const bound = this.db.prepare("SELECT telegram_id FROM telegram_identities WHERE user_id=?").get(userId) as
       | { telegram_id: string }
       | undefined;
@@ -240,6 +329,7 @@ export class SaasStore {
   putVerifiedTelegramSession(userId: string, envelope: string, account: { id: string; username?: string }): void {
     this.transaction(() => {
       this.active(userId);
+      this.checkTelegramConnectionIdentity(userId, account);
       const bound = this.db.prepare("SELECT telegram_id FROM telegram_identities WHERE user_id=?").get(userId) as
         | { telegram_id: string }
         | undefined;
@@ -303,6 +393,38 @@ export class SaasStore {
 
   revokeGrant(userId: string, grantId: string): void {
     this.db.prepare("DELETE FROM grant_bindings WHERE user_id=? AND grant_id=?").run(userId, grantId);
+  }
+
+  private markDeletion(userId: string): void {
+    if (!this.findUser(userId)) return;
+    this.db.prepare("UPDATE users SET disabled=1 WHERE id=?").run(userId);
+    this.revokeUserSessions(userId);
+    this.revokeUserGrants(userId);
+    this.db.prepare("INSERT OR IGNORE INTO pending_account_deletions(user_id) VALUES(?)").run(userId);
+  }
+
+  requestConnectionDeletion(userId: string): void {
+    this.transaction(() => this.markDeletion(userId));
+  }
+
+  requestCabinetDeletion(ownerId: string): string[] {
+    return this.transaction(() => {
+      const owned = this.listTelegramConnections(ownerId, true).map((connection) => connection.id);
+      for (const id of owned) this.markDeletion(id);
+      return owned;
+    });
+  }
+
+  pendingDeletions(): string[] {
+    return (
+      this.db.prepare("SELECT user_id FROM pending_account_deletions ORDER BY rowid DESC").all() as {
+        user_id: string;
+      }[]
+    ).map((row) => row.user_id);
+  }
+
+  hasOwnedConnections(ownerId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM telegram_connections WHERE owner_id=? LIMIT 1").get(ownerId);
   }
 
   deleteUser(userId: string): void {

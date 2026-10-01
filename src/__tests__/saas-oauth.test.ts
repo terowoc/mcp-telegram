@@ -432,14 +432,14 @@ test("new accounts expose full Telegram tools after connection and OAuth approva
     await s.close();
   }
 });
-test("before Telegram setup only status is available; invalid grants and inactive users fail closed", async () => {
+test("before Telegram setup only status and account discovery are available; invalid grants and inactive users fail closed", async () => {
   const s = await setup();
   try {
     const a = await s.authorize("alice");
     const listed = await (await s.rpc(a.tokens, "tools/list")).json();
     assert.deepEqual(
       listed.result.tools.map((tool: { name: string }) => tool.name),
-      ["telegram-status"],
+      ["telegram-status", "telegram-list-accounts"],
     );
     const grant = s.store.listGrants(s.alice.userId)[0];
     assert.ok(grant);

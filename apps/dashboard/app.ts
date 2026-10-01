@@ -12,6 +12,9 @@ const nav: [Page, string, string][] = [
   ["account", "Аккаунт", "◎"],
 ];
 const errors: Record<string, string> = {
+  "account-capacity": "Можно добавить до пяти Telegram-аккаунтов. Удалите ненужный аккаунт и повторите попытку.",
+  "invalid-account-label": "Название аккаунта должно содержать от 1 до 80 символов.",
+  "primary-account-required": "Основной аккаунт можно отключить, но нельзя удалить отдельно от кабинета.",
   "registration-failed": "Не удалось зарегистрироваться. Проверьте логин или выберите другой.",
   "invalid-credentials": "Неверный логин или пароль.",
   "recovery-failed": "Проверьте логин и код восстановления.",
@@ -27,6 +30,7 @@ const errors: Record<string, string> = {
   "telegram-already-connected": "Telegram уже подключён. Обновите статус кабинета.",
 };
 let cabinet: Cabinet | undefined;
+let selectedTelegramAccount: string | undefined;
 let clients: Client[] = [];
 let clientsState: "idle" | "loading" | "ready" | "error" = "idle";
 let renderedContext = "";
@@ -64,11 +68,18 @@ let epoch = 0;
 const continuation = new URLSearchParams(location.search).get("mcp_login");
 class StaleReply extends Error {}
 
+function scopedPath(path: string): string {
+  if (!selectedTelegramAccount || selectedTelegramAccount === cabinet?.user.id || path.startsWith("/telegram/accounts"))
+    return path;
+  return path === "/me" || path === "/policy" || path.startsWith("/telegram/")
+    ? `${path}${path.includes("?") ? "&" : "?"}telegramAccountId=${encodeURIComponent(selectedTelegramAccount)}`
+    : path;
+}
 async function accountRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const currentEpoch = epoch;
   const user = cabinet;
   if (!user) throw new StaleReply();
-  const value = await request<T>(path, method, body, user.csrfToken);
+  const value = await request<T>(scopedPath(path), method, body, user.csrfToken);
   if (currentEpoch !== epoch || cabinet?.user.id !== user.user.id) throw new StaleReply();
   return value;
 }
@@ -82,11 +93,11 @@ function escapeHtml(value: unknown): string {
 function button(label: string, action: string, kind = "primary"): string {
   return `<button type="button" class="button ${kind}" data-action="${action}" aria-label="${action === "copy-json" ? "Копировать JSON конфигурацию" : action === "copy-toml" ? "Копировать TOML конфигурацию" : action === "dismiss-notice" ? "Закрыть уведомление" : label === "Скопировать" ? "Скопировать адрес MCP" : label}" ${isBusy ? "disabled" : ""}>${label}</button>`;
 }
-function field(label: string, name: string, type = "text", extra = ""): string {
-  return `<div class="field"><label for="field-${name}">${label}</label><div class="inputWrap"><input id="field-${name}" name="${name}" type="${type === "password" && showPassword ? "text" : type}" required ${extra}>${type === "password" ? `<button class="passwordToggle" type="button" data-action="toggle-password" aria-label="${showPassword ? "Скрыть пароль" : "Показать пароль"}" aria-pressed="${showPassword}">${showPassword ? "Скрыть" : "Показать"}</button>` : ""}</div></div>`;
+function field(label: string, name: string, type = "text", extra = "", id = name): string {
+  return `<div class="field"><label for="field-${id}">${label}</label><div class="inputWrap"><input id="field-${id}" name="${name}" type="${type === "password" && showPassword ? "text" : type}" required ${extra}>${type === "password" ? `<button class="passwordToggle" type="button" data-action="toggle-password" aria-label="${showPassword ? "Скрыть пароль" : "Показать пароль"}" aria-pressed="${showPassword}">${showPassword ? "Скрыть" : "Показать"}</button>` : ""}</div></div>`;
 }
 function render(): void {
-  const context = `${epoch}:${cabinet?.user.id ?? "anonymous"}:${cabinet?.policy.version ?? 0}:${page}:${authMode}`;
+  const context = `${epoch}:${cabinet?.user.id ?? "anonymous"}:${cabinet?.policy.version ?? 0}:${cabinet?.telegramAccountId ?? ""}:${page}:${authMode}`;
   const scrollTop = context === renderedContext ? app.querySelector<HTMLElement>(".canvas")?.scrollTop : undefined;
   const documentScrollTop = context === renderedContext ? document.scrollingElement?.scrollTop : 0;
   const forms = [...app.querySelectorAll<HTMLFormElement>("form")];
@@ -204,11 +215,11 @@ function renderView(): void {
     return;
   }
   if (!cabinet) {
-    app.innerHTML = `<main class="authLayout"><section class="authIntro"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span><span class="freeBadge">Бесплатно</span></div><div class="authCopy"><span class="eyebrow">ВАШ TELEGRAM. В ВАШЕМ AI.</span><h1>Подключите Telegram<br> к своему AI-клиенту.</h1><p>Читайте и отправляйте сообщения через свой AI. Права всегда под вашим контролем.</p><div class="introSteps"><span>1. Создайте аккаунт</span><span>2. Подключите Telegram</span><span>3. Добавьте MCP в AI</span></div></div><p class="introFoot">Одна серверная сессия Telegram · OAuth · Доступ только с вашего разрешения</p></section><section class="authPanel"><div class="authToolbar">${themeButton()}</div><div class="authBox"><div class="authMark">➤</div><h2>${authMode === "register" ? "Создать аккаунт" : authMode === "login" ? "С возвращением" : "Восстановить доступ"}</h2><p class="muted">${authMode === "register" ? "Создайте аккаунт, затем подключите Telegram по QR-коду." : authMode === "login" ? "Войдите в свой кабинет Telegram MCP." : "Используйте один из сохранённых кодов восстановления."}</p>${notice}<form id="authForm">${field("Логин", "login", "text", 'autocomplete="username" pattern="[A-Za-z0-9_]{3,32}" minlength="3" maxlength="32" placeholder="username"')}${authMode === "recover" ? field("Код восстановления", "recoveryCode", "text", 'autocomplete="off" maxlength="128"') : ""}${field(authMode === "recover" ? "Новый пароль" : "Пароль", "password", "password", `autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="16" maxlength="1024" placeholder="Минимум 16 символов"`)}<p class="fieldHint">Логин: 3–32 латинских символа, цифры или _. Пароль: минимум 16 символов.</p>${authMode === "register" ? '<div class="permissionSummary"><strong>Полный доступ по умолчанию</strong><span>Чтение, отправка сообщений и изменения во всех чатах. Права можно ограничить в кабинете.</span></div>' : ""}<button class="button primary wide" ${isBusy ? "disabled" : ""}>${isBusy ? "Подождите…" : authMode === "register" ? "Зарегистрироваться" : authMode === "login" ? "Войти" : "Восстановить"}</button></form><div class="authLinks">${authMode === "register" ? "Уже есть аккаунт? " + button("Войти", "auth-login", "link") : button("Создать аккаунт", "auth-register", "link")}${authMode !== "recover" ? button("Забыли пароль?", "auth-recover", "link") : button("Назад ко входу", "auth-login", "link")}</div></div><p class="authFoot">Telegram MCP — независимый сервис для подключения AI.</p></section></main>`;
+    app.innerHTML = `<main class="authLayout"><section class="authIntro"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span><span class="freeBadge">Бесплатно</span></div><div class="authCopy"><span class="eyebrow">ВАШ TELEGRAM. В ВАШЕМ AI.</span><h1>Подключите Telegram<br> к своему AI-клиенту.</h1><p>Читайте и отправляйте сообщения через свой AI. Права всегда под вашим контролем.</p><div class="introSteps"><span>1. Создайте аккаунт</span><span>2. Подключите Telegram</span><span>3. Добавьте MCP в AI</span></div></div><p class="introFoot">Отдельная сессия для каждого аккаунта Telegram · OAuth · Доступ только с вашего разрешения</p></section><section class="authPanel"><div class="authToolbar">${themeButton()}</div><div class="authBox"><div class="authMark">➤</div><h2>${authMode === "register" ? "Создать аккаунт" : authMode === "login" ? "С возвращением" : "Восстановить доступ"}</h2><p class="muted">${authMode === "register" ? "Создайте аккаунт, затем подключите Telegram по QR-коду." : authMode === "login" ? "Войдите в свой кабинет Telegram MCP." : "Используйте один из сохранённых кодов восстановления."}</p>${notice}<form id="authForm">${field("Логин", "login", "text", 'autocomplete="username" pattern="[A-Za-z0-9_]{3,32}" minlength="3" maxlength="32" placeholder="username"')}${authMode === "recover" ? field("Код восстановления", "recoveryCode", "text", 'autocomplete="off" maxlength="128"') : ""}${field(authMode === "recover" ? "Новый пароль" : "Пароль", "password", "password", `autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="16" maxlength="1024" placeholder="Минимум 16 символов"`)}<p class="fieldHint">Логин: 3–32 латинских символа, цифры или _. Пароль: минимум 16 символов.</p>${authMode === "register" ? '<div class="permissionSummary"><strong>Полный доступ по умолчанию</strong><span>Чтение, отправка сообщений и изменения во всех чатах. Права можно ограничить в кабинете.</span></div>' : ""}<button class="button primary wide" ${isBusy ? "disabled" : ""}>${isBusy ? "Подождите…" : authMode === "register" ? "Зарегистрироваться" : authMode === "login" ? "Войти" : "Восстановить"}</button></form><div class="authLinks">${authMode === "register" ? "Уже есть аккаунт? " + button("Войти", "auth-login", "link") : button("Создать аккаунт", "auth-register", "link")}${authMode !== "recover" ? button("Забыли пароль?", "auth-recover", "link") : button("Назад ко входу", "auth-login", "link")}</div></div><p class="authFoot">Telegram MCP — независимый сервис для подключения AI.</p></section></main>`;
     return;
   }
   const title = nav.find(([key]) => key === page)![1];
-  app.innerHTML = `<a class="skipLink" href="#main-content">Перейти к содержимому</a><div class="workspace"><aside class="sidebar"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span></div><div class="userCard"><div class="avatar">${escapeHtml(cabinet.user.login[0]?.toUpperCase() || "T")}</div><div class="userInfo"><strong>${escapeHtml(cabinet.user.login)}</strong><span>${active ? "Telegram подключён" : "Подключите Telegram"}</span></div><span class="statusDot ${active ? "online" : ""}"></span></div><nav class="navigation" aria-label="Кабинет">${nav.map(([key, label, icon]) => `<button class="navItem ${page === key ? "selected" : ""}" data-page="${key}" aria-label="${label}" ${isBusy ? "disabled" : ""} ${page === key ? 'aria-current="page"' : ""}><span class="navIcon" aria-hidden="true">${icon}</span><span class="navLabel" data-short="${key === "access" ? "Права" : key === "clients" ? "Клиенты" : label}">${label}</span>${key === "telegram" ? `<span class="navDot ${active ? "online" : ""}"></span>` : ""}</button>`).join("")}</nav><div class="sidebarFoot"><div class="freePlan"><span class="planIcon">✦</span><div><strong>Бесплатный доступ</strong><span>Ваш Telegram. Ваши разрешения.</span></div></div>${button("Выйти из аккаунта", "logout", "link")}</div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="topTitle"><span class="topIcon" aria-hidden="true">${nav.find(([key]) => key === page)![2]}</span><div><h1>${title}</h1><p>${page === "mcp" ? "Подключение Telegram к вашим AI-клиентам" : "Telegram MCP"}</p></div></div><div class="topActions">${themeButton()}<span class="connectionPill ${active ? "connected" : ""}">${active ? "● Подключено" : "○ Не подключено"}</span></div></header><div class="canvas"><div class="content" aria-busy="${isBusy}"><div class="steps" aria-label="Этапы подключения"><span class="done"><b>✓</b> Аккаунт</span><i></i><span class="${active ? "done" : "current"}"><b>${active ? "✓" : "2"}</b> Telegram</span><i></i><span class="${active ? "current" : ""}"><b>3</b> MCP</span></div>${notice}${recoveryCodes.length ? renderRecovery() : renderPage()}<p class="canvasFoot">Telegram MCP · Бесплатный сервис · Одна серверная сессия</p></div></div></main></div>`;
+  app.innerHTML = `<a class="skipLink" href="#main-content">Перейти к содержимому</a><div class="workspace"><aside class="sidebar"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span></div><div class="userCard"><div class="avatar">${escapeHtml(cabinet.user.login[0]?.toUpperCase() || "T")}</div><div class="userInfo"><strong>${escapeHtml(cabinet.user.login)}</strong><span>${active ? "Telegram подключён" : "Подключите Telegram"}</span></div><span class="statusDot ${active ? "online" : ""}"></span></div><nav class="navigation" aria-label="Кабинет">${nav.map(([key, label, icon]) => `<button class="navItem ${page === key ? "selected" : ""}" data-page="${key}" aria-label="${label}" ${isBusy ? "disabled" : ""} ${page === key ? 'aria-current="page"' : ""}><span class="navIcon" aria-hidden="true">${icon}</span><span class="navLabel" data-short="${key === "access" ? "Права" : key === "clients" ? "Клиенты" : label}">${label}</span>${key === "telegram" ? `<span class="navDot ${active ? "online" : ""}"></span>` : ""}</button>`).join("")}</nav><div class="sidebarFoot"><div class="freePlan"><span class="planIcon">✦</span><div><strong>Бесплатный доступ</strong><span>Ваш Telegram. Ваши разрешения.</span></div></div>${button("Выйти из аккаунта", "logout", "link")}</div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="topTitle"><span class="topIcon" aria-hidden="true">${nav.find(([key]) => key === page)![2]}</span><div><h1>${title}</h1><p>${page === "mcp" ? "Подключение Telegram к вашим AI-клиентам" : "Telegram MCP"}</p></div></div><div class="topActions">${themeButton()}<span class="connectionPill ${active ? "connected" : ""}">${active ? "● Подключено" : "○ Не подключено"}</span></div></header><div class="canvas"><div class="content" aria-busy="${isBusy}"><div class="steps" aria-label="Этапы подключения"><span class="done"><b>✓</b> Аккаунт</span><i></i><span class="${active ? "done" : "current"}"><b>${active ? "✓" : "2"}</b> Telegram</span><i></i><span class="${active ? "current" : ""}"><b>3</b> MCP</span></div>${notice}${recoveryCodes.length ? renderRecovery() : renderConnections() + renderPage()}<p class="canvasFoot">Telegram MCP · Бесплатный сервис · Отдельная сессия для каждого аккаунта</p></div></div></main></div>`;
 }
 function renderRecovery(): string {
   return `<section class="card recoveryCard"><span class="cardIcon">◈</span><h2>Сохраните коды восстановления</h2><p class="muted">Каждый код можно использовать один раз, чтобы восстановить пароль. Сохраните их в надёжном месте: после закрытия они больше не отображаются.</p><pre class="code recoveryCodes">${escapeHtml(recoveryCodes.join("\n"))}</pre><div class="actions">${button("Скопировать коды", "copy-recovery", "secondary")}${button("Скачать .txt", "download-recovery", "secondary")}${button("Я сохранил коды", "saved-recovery")}</div></section>`;
@@ -222,7 +233,7 @@ function renderPage(): string {
 }
 function renderMcp(): string {
   if (!cabinet!.telegram.sessionPresent)
-    return `<section class="hero"><div class="heroIcon">➤</div><span class="eyebrow">СЛЕДУЮЩИЙ ШАГ</span><h2>Подключите свой Telegram</h2><p>Один QR-код — и ваши AI-клиенты смогут работать с Telegram через MCP. Разрешения всегда под вашим контролем.</p>${button("Подключить Telegram", "open-telegram")}<div class="heroNotes"><span>◈ ${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</span><span>◇ OAuth для AI-клиентов</span></div></section><div class="infoGrid"><section class="card"><h3>Одна сессия</h3><p class="muted">Telegram подключается на сервере. Кабинет управляет MCP и не открывает отдельный клиент чатов.</p></section><section class="card"><h3>Ваши данные — ваш доступ</h3><p class="muted">Вы выбираете права и можете отключить любой AI-клиент в кабинете.</p></section></div>`;
+    return `<section class="hero"><div class="heroIcon">➤</div><span class="eyebrow">СЛЕДУЮЩИЙ ШАГ</span><h2>Подключите свой Telegram</h2><p>Один QR-код — и ваши AI-клиенты смогут работать с Telegram через MCP. Разрешения всегда под вашим контролем.</p>${button("Подключить Telegram", "open-telegram")}<div class="heroNotes"><span>◈ ${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</span><span>◇ OAuth для AI-клиентов</span></div></section><div class="infoGrid"><section class="card"><h3>Отдельные сессии</h3><p class="muted">Telegram подключается на сервере. Кабинет управляет MCP и не открывает отдельный клиент чатов.</p></section><section class="card"><h3>Ваши данные — ваш доступ</h3><p class="muted">Вы выбираете права и можете отключить любой AI-клиент в кабинете.</p></section></div>`;
   const url = cabinet!.mcpUrl;
   const config = JSON.stringify({ mcpServers: { telegram: { type: "http", url } } }, undefined, 2);
   return `<section class="welcomeBubble"><span class="welcomeCheck" aria-hidden="true">✓</span><div><h2>Telegram готов к работе с AI</h2><p>Добавьте адрес MCP в своём клиенте и подтвердите доступ через OAuth.</p></div></section><section class="card"><div class="cardHeader"><div><span class="eyebrow">MCP ENDPOINT</span><h2>Ваш адрес подключения</h2></div><span class="tag">Streamable HTTP</span></div><div class="endpoint"><code>${escapeHtml(url)}</code>${button("Скопировать", "copy-url", "secondary")}</div><div class="metadata"><span>Авторизация <strong>OAuth 2.1 + PKCE</strong></span><span>Права <strong>${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</strong></span><span>Чаты <strong>${cabinet!.policy.chatIds.length ? cabinet!.policy.chatIds.length + " выбрано" : "Все ваши чаты"}</strong></span></div></section><section class="card"><h2>Как подключить AI-клиент</h2><ol class="connectSteps"><li><strong>Откройте настройки MCP</strong><p>В ChatGPT, Claude или другом клиенте выберите добавление удалённого MCP-сервера.</p></li><li><strong>Вставьте адрес подключения</strong><p>Используйте URL выше и OAuth, если клиент предлагает способ авторизации.</p></li><li><strong>Подтвердите разрешения</strong><p>Войдите в этот кабинет и разрешите клиенту доступ. Повторно подключать Telegram не нужно.</p></li></ol><p class="fieldHint">Клиент должен поддерживать удалённый MCP по HTTP и OAuth. Его доступ появится в разделе «Подключённые клиенты».</p></section><details class="configDetails"><summary>Конфигурация для MCP-клиентов <span>JSON · TOML</span></summary><div class="infoGrid"><section class="card"><div class="cardHeader"><h3>JSON конфигурация</h3>${button("Копировать", "copy-json", "link")}</div><pre class="code">${escapeHtml(config)}</pre><p class="fieldHint">Для клиентов с форматом mcpServers. Авторизацию выполните через OAuth в клиенте.</p></section><section class="card"><div class="cardHeader"><h3>Codex · TOML</h3>${button("Копировать", "copy-toml", "link")}</div><pre class="code">${escapeHtml(`[mcp_servers.telegram]\nurl = "${url}"`)}</pre><p class="fieldHint">Добавьте сервер в конфигурацию MCP и выполните вход через OAuth.</p></section></div></details>${continuation ? `<section class="card oauthCard"><h3>Продолжить подключение клиента</h3><p class="muted">Telegram подключён. Вернитесь к подтверждению доступа для AI-клиента.</p>${button("Продолжить", "resume-oauth")}</section>` : ""}`;
@@ -230,7 +241,7 @@ function renderMcp(): string {
 function renderTelegram(): string {
   if (cabinet!.telegram.sessionPresent) {
     const account = cabinet!.telegram.account;
-    return `<section class="card telegramCard"><div class="telegramAvatar">➤</div><h2>Telegram подключён</h2><p class="muted">${account?.username ? "@" + escapeHtml(account.username) : "Ваш аккаунт Telegram"}${account?.id ? ` · ID ${escapeHtml(account.id)}` : ""}</p><div class="sessionInfo"><span class="statusDot online"></span><span>Одна серверная сессия для MCP</span></div><p class="muted">Все AI-клиенты используют это подключение. Вход в кабинет не создаёт новую сессию Telegram.</p><div class="actions">${button("Перейти к MCP", "open-mcp")}${button("Отключить Telegram", "disconnect", "danger")}</div></section>`;
+    return `<section class="card telegramCard"><div class="telegramAvatar">➤</div><h2>Telegram подключён</h2><p class="muted">${account?.username ? "@" + escapeHtml(account.username) : "Ваш аккаунт Telegram"}${account?.id ? ` · ID ${escapeHtml(account.id)}` : ""}</p><div class="sessionInfo"><span class="statusDot online"></span><span>Отдельная серверная сессия этого аккаунта</span></div><p class="muted">AI-клиенты выбирают этот аккаунт по его ID. Вход в кабинет не создаёт новую сессию Telegram.</p><div class="actions">${button("Перейти к MCP", "open-mcp")}${button("Отключить Telegram", "disconnect", "danger")}</div></section>`;
   }
   let body = button("Показать QR-код", "start-telegram");
   if (attempt) {
@@ -239,14 +250,22 @@ function renderTelegram(): string {
     else if (attempt.state === "needs-password")
       body = `<form id="telegramPasswordForm">${field("Облачный пароль Telegram", "password", "password", 'autocomplete="off" maxlength="1024"')}<button class="button primary wide" ${isBusy ? "disabled" : ""}>Подтвердить</button></form><p class="muted small">Это пароль двухэтапной проверки Telegram.</p>${button("Отменить", "cancel-telegram", "secondary")}`;
     else if (["error", "expired", "cancelled"].includes(attempt.state))
-      body = `<p class="notice error">${attempt.state === "expired" ? "Время подключения истекло." : "Подключение не завершено."}</p>${button("Попробовать снова", "start-telegram")}`;
+      body = `<p class="notice error">${attempt.code === "account-already-added" ? "Этот Telegram уже добавлен в ваш кабинет. Выберите его в списке аккаунтов." : attempt.state === "expired" ? "Время подключения истекло." : "Подключение не завершено."}</p>${button("Попробовать снова", "start-telegram")}`;
     else
       body = `<div class="loadingRing" aria-hidden="true"></div><p class="muted" role="status">Подключаем Telegram…</p>${button("Отменить", "cancel-telegram", "secondary")}`;
   }
   return `<section class="card telegramCard"><div class="telegramAvatar">➤</div><h2>${attempt?.state === "qr" ? "Отсканируйте QR-код" : attempt?.state === "needs-password" ? "Подтвердите вход" : "Подключить Telegram"}</h2><p class="muted">${attempt?.state === "qr" ? "В Telegram: Настройки → Устройства → Подключить устройство." : attempt?.state === "needs-password" ? "Введите облачный пароль, чтобы завершить подключение Telegram." : "Подтвердите подключение на телефоне. Сессия будет храниться на сервере и использоваться для MCP."}</p><div class="qrBody">${body}</div></section>`;
 }
+function renderConnections(): string {
+  const accounts = cabinet?.accounts;
+  if (!accounts?.length) return "";
+  const selected = cabinet!.telegramAccountId ?? cabinet!.user.id;
+  const current = accounts.find((account) => account.id === selected)!;
+  return `<section class="card"><div class="cardHeader"><h2>Telegram-аккаунты</h2><span class="tag">${accounts.length} / 5</span></div><div class="accountChoices">${accounts.map((account) => `<button type="button" class="button ${account.id === selected ? "primary" : "secondary"}" data-action="${account.removalPending ? "retry-remove:" : "select-account:"}${escapeHtml(account.id)}" aria-pressed="${account.id === selected}" ${isBusy ? "disabled" : ""}>${escapeHtml(account.label)} · ${account.removalPending ? "Повторить удаление" : account.telegram.sessionPresent ? "Подключён" : "Не подключён"}</button>`).join("")}</div><p class="muted">Выбор здесь управляет кабинетом. В AI попросите выбрать аккаунт по названию. Без явного выбора AI использует основной аккаунт.</p><div class="accountDetail"><span class="muted">ID выбранного аккаунта</span><code>${escapeHtml(selected)}</code></div>${!current.primary ? `<details><summary>Название и удаление аккаунта</summary><form id="renameTelegramAccountForm">${field("Название", "label", "text", `maxlength="80" value="${escapeHtml(current.label)}"`, "rename-label")}<button class="button secondary" ${isBusy ? "disabled" : ""}>Сохранить название</button></form><div class="actions">${button("Удалить выбранный Telegram-аккаунт", "remove-telegram-account", "danger")}</div></details>` : ""}${accounts.length < 5 ? `<details><summary>Добавить Telegram-аккаунт</summary><form id="addTelegramAccountForm">${field("Название аккаунта", "label", "text", 'maxlength="80" placeholder="Например: Работа"', "add-label")}<button class="button primary" ${isBusy ? "disabled" : ""}>Добавить и показать QR-код</button></form></details>` : ""}<p class="fieldHint">Добавление и удаление аккаунтов отзывают текущие OAuth-доступы. Подключите AI-клиенты заново, чтобы подтвердить новый состав аккаунтов.</p></section>`;
+}
+
 function renderAccess(): string {
-  return `<section class="card"><h2>Что разрешено AI-клиентам</h2><p class="muted">Эти правила действуют для всех подключённых MCP-клиентов.</p><form id="policyForm"><label class="choice"><input type="radio" name="profile" value="read" ${cabinet!.policy.profile === "read" ? "checked" : ""}><span><strong>Только чтение</strong><small>Просмотр и поиск данных. Без отправки и изменения сообщений.</small></span></label><label class="choice"><input type="radio" name="profile" value="full" ${cabinet!.policy.profile === "full" ? "checked" : ""}><span><strong>Чтение и изменение</strong><small>Также разрешает отправку сообщений и другие изменения через MCP.</small></span><span class="tag">По умолчанию</span></label><label class="field"><span>Разрешённые чаты</span><textarea name="chatIds" rows="3" placeholder="Например: -1001234567890, 123456789">${escapeHtml(cabinet!.policy.chatIds.join(", "))}</textarea></label><p class="fieldHint">Числовые ID через запятую, до 100 чатов. Пустое поле разрешает все ваши чаты.</p><div class="notice policyNotice">Если изменить права, текущие OAuth-доступы отключатся. Подключите AI-клиенты заново с новыми разрешениями.</div><button class="button primary" ${isBusy ? "disabled" : ""}>Сохранить права</button></form></section>`;
+  return `<section class="card"><h2>Что разрешено AI-клиентам</h2><p class="muted">Эти правила действуют для выбранного Telegram-аккаунта во всех MCP-клиентах.</p><form id="policyForm"><label class="choice"><input type="radio" name="profile" value="read" ${cabinet!.policy.profile === "read" ? "checked" : ""}><span><strong>Только чтение</strong><small>Просмотр и поиск данных. Без отправки и изменения сообщений.</small></span></label><label class="choice"><input type="radio" name="profile" value="full" ${cabinet!.policy.profile === "full" ? "checked" : ""}><span><strong>Чтение и изменение</strong><small>Также разрешает отправку сообщений и другие изменения через MCP.</small></span><span class="tag">По умолчанию</span></label><label class="field"><span>Разрешённые чаты</span><textarea name="chatIds" rows="3" placeholder="Например: -1001234567890, 123456789">${escapeHtml(cabinet!.policy.chatIds.join(", "))}</textarea></label><p class="fieldHint">Числовые ID через запятую, до 100 чатов. Пустое поле разрешает все ваши чаты.</p><div class="notice policyNotice">Если изменить права, текущие OAuth-доступы отключатся. Подключите AI-клиенты заново с новыми разрешениями.</div><button class="button primary" ${isBusy ? "disabled" : ""}>Сохранить права</button></form></section>`;
 }
 function renderClients(): string {
   const pending = clientsState === "loading" || clientsState === "idle";
@@ -282,6 +301,7 @@ function showError(error: unknown): void {
 async function run(work: () => Promise<void>): Promise<void> {
   if (isBusy) return;
   const currentEpoch = epoch;
+  const operationOwner = cabinet?.user.id;
   isBusy = true;
   message = "";
   floatingNotice = false;
@@ -290,7 +310,7 @@ async function run(work: () => Promise<void>): Promise<void> {
   try {
     await work();
   } catch (error) {
-    if (currentEpoch === epoch) showError(error);
+    if (currentEpoch === epoch || (operationOwner && cabinet?.user.id === operationOwner)) showError(error);
   } finally {
     isBusy = false;
     if (pendingPage && cabinet) {
@@ -301,11 +321,24 @@ async function run(work: () => Promise<void>): Promise<void> {
   }
 }
 async function refresh(): Promise<void> {
-  const currentEpoch = epoch;
-  const value = await request<Cabinet>("/me");
-  if (currentEpoch !== epoch) return;
+  let currentEpoch = epoch;
+  let requestedSelection = selectedTelegramAccount;
+  let value: Cabinet;
+  try {
+    value = await request<Cabinet>(scopedPath("/me"));
+  } catch (error) {
+    if (currentEpoch !== epoch || requestedSelection !== selectedTelegramAccount) return;
+    if (!(error instanceof ApiError && error.status === 404 && selectedTelegramAccount)) throw error;
+    selectedTelegramAccount = undefined;
+    requestedSelection = undefined;
+    currentEpoch = ++epoch;
+    clearAttempt();
+    value = await request<Cabinet>("/me");
+  }
+  if (currentEpoch !== epoch || requestedSelection !== selectedTelegramAccount) return;
   const switchedAccount = cabinet && cabinet.user.id !== value.user.id;
   if (switchedAccount) {
+    selectedTelegramAccount = undefined;
     selectPage(value.telegram.sessionPresent ? "mcp" : "telegram");
     clearAttempt();
     clients = [];
@@ -321,7 +354,7 @@ async function resumeAttempt(): Promise<void> {
   if (!cabinet || cabinet.telegram.sessionPresent || attempt) return;
   const currentEpoch = epoch;
   const userId = cabinet.user.id;
-  const value = await request<{ attempt?: Attempt }>("/telegram/login");
+  const value = await accountRequest<{ attempt?: Attempt }>("/telegram/login");
   if (currentEpoch !== epoch || cabinet?.user.id !== userId || attempt) return;
   attempt = value.attempt;
   if (attempt) {
@@ -341,7 +374,7 @@ async function pollAttempt(id: string, currentEpoch: number): Promise<void> {
     return;
   }
   try {
-    const value = await request<Attempt>(`/telegram/login/${id}`);
+    const value = await accountRequest<Attempt>(`/telegram/login/${id}`);
     if (attempt?.id !== id || currentEpoch !== epoch) return;
     const changed = value.state !== attempt.state || value.dataUrl !== attempt.dataUrl;
     attempt = value;
@@ -511,12 +544,37 @@ async function dispatchAction(action: string): Promise<void> {
   }
   if (action === "disconnect" && !confirm("Отключить Telegram и отозвать доступ всех MCP-клиентов?")) return;
   await run(async () => {
-    if (action === "logout") {
+    if (action.startsWith("select-account:")) {
+      const id = action.slice("select-account:".length);
+      if (!cabinet?.accounts?.some((account) => account.id === id)) return;
+      epoch++;
+      clearAttempt();
+      selectedTelegramAccount = id;
+      await refresh();
+      await resumeAttempt();
+    } else if (action === "remove-telegram-account" || action.startsWith("retry-remove:")) {
+      const id = action.startsWith("retry-remove:") ? action.slice("retry-remove:".length) : cabinet!.telegramAccountId;
+      if (
+        !id ||
+        id === cabinet!.user.id ||
+        !confirm("Удалить выбранный Telegram-аккаунт, его файлы и отозвать OAuth-доступы?")
+      )
+        return;
+      await accountRequest(`/telegram/accounts/${encodeURIComponent(id)}`, "DELETE");
+      epoch++;
+      clearAttempt();
+      selectedTelegramAccount = undefined;
+      clients = [];
+      clientsState = "idle";
+      await refresh();
+      message = "Аккаунт удалён. Подключите AI-клиенты заново.";
+    } else if (action === "logout") {
       await accountRequest("/logout", "POST", {});
       epoch++;
       pendingPage = undefined;
       clearAttempt();
       cabinet = undefined;
+      selectedTelegramAccount = undefined;
       clients = [];
       clientsState = "idle";
       recoveryCodes = [];
@@ -622,6 +680,26 @@ app.addEventListener("submit", (event) => {
       } catch (error) {
         if (authenticatedEpoch === epoch) showError(error);
       }
+    } else if (form.id === "addTelegramAccountForm" && cabinet) {
+      const result = await accountRequest<{ account: { id: string } }>("/telegram/accounts", "POST", {
+        label: value("label"),
+      });
+      epoch++;
+      clearAttempt();
+      selectedTelegramAccount = result.account.id;
+      clients = [];
+      clientsState = "idle";
+      await refresh();
+      selectPage("telegram");
+      attempt = await accountRequest<Attempt>("/telegram/login", "POST", {});
+      timer = window.setTimeout(() => void pollAttempt(attempt!.id, epoch), 200);
+      message = "Подтвердите вход в добавляемый аккаунт Telegram. Затем подключите AI-клиенты заново.";
+    } else if (form.id === "renameTelegramAccountForm" && cabinet?.telegramAccountId) {
+      await accountRequest(`/telegram/accounts/${encodeURIComponent(cabinet.telegramAccountId)}`, "PATCH", {
+        label: value("label"),
+      });
+      await refresh();
+      message = "Название сохранено.";
     } else if (form.id === "telegramPasswordForm" && cabinet && attempt) {
       await accountRequest(`/telegram/login/${attempt.id}/password`, "POST", { password });
       attempt = { ...attempt, state: "connecting", dataUrl: undefined };
@@ -645,6 +723,7 @@ app.addEventListener("submit", (event) => {
       pendingPage = undefined;
       clearAttempt();
       cabinet = undefined;
+      selectedTelegramAccount = undefined;
       clients = [];
       clientsState = "idle";
       recoveryCodes = [];

@@ -176,7 +176,7 @@ test("schema_v2_migration_preserves_foreign_keys_and_legacy_access", async () =>
     store.close();
     const reopened = new DatabaseSync(path);
     assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
-    assert.equal((reopened.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+    assert.equal((reopened.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
     assert.equal((reopened.prepare("SELECT count(*) AS n FROM recovery").get() as { n: number }).n, 1);
     reopened.close();
   } finally {
