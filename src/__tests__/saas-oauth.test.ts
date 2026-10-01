@@ -469,6 +469,7 @@ test("before Telegram setup only status is available; invalid grants and inactiv
 test("policy changes invalidate existing access and refresh even if provider cleanup never runs", async () => {
   const s = await setup();
   try {
+    s.store.updatePolicy(s.alice.userId, { profile: "read", chatIds: [], version: 1 });
     const a = await s.authorize("alice");
     s.store.updatePolicy(s.alice.userId, { profile: "full", chatIds: [], version: 0 });
     assert.equal((await s.rpc(a.tokens, "tools/list")).status, 401);
@@ -504,6 +505,7 @@ test("old owner grant never becomes a guest grant when switching to SaaS", async
 test("a policy changed after the consent page requires a fresh displayed consent", async () => {
   const s = await setup();
   try {
+    s.store.updatePolicy(s.alice.userId, { profile: "read", chatIds: [], version: 1 });
     await s.authorize("alice", () =>
       s.store.updatePolicy(s.alice.userId, { profile: "full", chatIds: [], version: 0 }),
     );
