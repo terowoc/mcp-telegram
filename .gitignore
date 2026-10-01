@@ -34,10 +34,4 @@ coverage/
 # Output of `mcp-telegram-manifest` CLI
 manifest.json
 
-# Vendored Web A local build/test output
-apps/web/.cache/
-apps/web/test-results/
-apps/web/playwright-report/
-apps/web/tauri/target/
-apps/web/bundle-stats/
 .superpowers/

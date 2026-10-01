@@ -245,50 +245,22 @@ test("SaaS forwards configured external MCP origins and rejects unlisted origins
   }
 });
 
-test("unified bootstrap is wired through shared SaaS control and issues a passwordless cabinet", async () => {
+test("Telegram Web bootstrap is unavailable and registration creates a password cabinet", async () => {
   const fixture = await setup();
-  const { fork: forkChild } = await import("node:child_process");
-  let starts = 0;
-  const bootstrapSpawn: typeof forkChild = (_file, args, options) => {
-    starts++;
-    return forkChild(new URL("./fixtures/telegram-auth-worker.mjs", import.meta.url), args, options);
-  };
-  const runtime = await startSaas({ ...fixture.config, apiId: 3, maxWorkers: 2 }, { bootstrapSpawn });
+  const runtime = await startSaas(fixture.config);
   const server = await serve(runtime.app);
   try {
-    const issued = await server.request("/api/saas/telegram-auth/start", {});
-    const csrf = (await issued.json()).csrfToken;
-    const bootstrapCookie = issued.headers.getSetCookie()[0].split(";")[0];
-    assert.equal(starts, 0);
-    const started = await server.request("/api/saas/telegram-auth/start", {}, bootstrapCookie, {
-      "x-csrf-token": csrf,
-    });
-    assert.equal(started.status, 201);
-    const attempt = await started.json();
-    let verified = false;
-    for (let i = 0; i < 40; i++) {
-      const read = await server.request(`/api/saas/telegram-auth/${attempt.id}`, undefined, bootstrapCookie);
-      if ((await read.json()).state === "verified") {
-        verified = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(verified, true);
-    const completed = await server.request(`/api/saas/telegram-auth/${attempt.id}/complete`, {}, bootstrapCookie, {
-      "x-csrf-token": csrf,
-    });
-    assert.equal(completed.status, 200);
-    const cabinetCookie = completed.headers
-      .getSetCookie()
-      .find((value) => value.startsWith("__Host-mcp-saas="))
-      ?.split(";")[0];
-    assert.ok(cabinetCookie);
-    const me = await (await server.request("/api/saas/me", undefined, cabinetCookie)).json();
-    assert.equal(me.user.hasPassword, false);
-    assert.equal(me.telegram.account.id, "12345");
-    assert.equal(me.telegram.sessionPresent, true);
-    assert.equal(starts, 1);
+    assert.equal((await server.request("/api/saas/telegram-auth/start", {})).status, 401);
+    const registered = await server.request("/api/saas/register", { login: "new_user", password });
+    assert.equal(registered.status, 201);
+    const cookie = registered.headers.getSetCookie()[0].split(";")[0];
+    const me = await (await server.request("/api/saas/me", undefined, cookie)).json();
+    assert.equal(me.user.hasPassword, true);
+    assert.equal(me.telegram.sessionPresent, false);
+    assert.equal(
+      (await server.request("/api/saas/telegram-auth/start", {}, cookie, { "x-csrf-token": me.csrfToken })).status,
+      404,
+    );
   } finally {
     await server.close();
     await runtime.close();

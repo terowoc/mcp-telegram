@@ -97,6 +97,11 @@ export class LoginAttempts {
     const attempt = this.attempts.get(id);
     return attempt?.userId === userId && attempt.view.expiresAt > Date.now() ? { ...attempt.view } : undefined;
   }
+  getCurrent(userId: string): LoginAttemptView | undefined {
+    const id = this.users.get(userId);
+    const view = id ? this.get(userId, id) : undefined;
+    return view && !terminal.has(view.state) ? view : undefined;
+  }
   password(userId: string, id: string, password: string): boolean {
     const attempt = this.attempts.get(id);
     if (!attempt || !this.get(userId, id) || attempt.view.state !== "needs-password") return false;

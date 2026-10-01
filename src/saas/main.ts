@@ -13,9 +13,6 @@ import { loadVaultKey, SessionVault } from "./session-vault.js";
 import { mountSaasFrontend } from "./static.js";
 import { createSaasStore } from "./store.js";
 import { WorkerSupervisor } from "./supervisor.js";
-import { TelegramAuthAttempts } from "./telegram-auth-attempts.js";
-import { TelegramAuthWorker } from "./telegram-auth-protocol.js";
-import { createTelegramAuthRoutes } from "./telegram-auth-routes.js";
 import { WorkerBudget } from "./worker-budget.js";
 
 export interface SaasConfig {
@@ -90,10 +87,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
     version: env.npm_package_version ?? "1.43.1",
   });
 }
-export async function startSaas(
-  config: SaasConfig,
-  options: { spawn?: typeof fork; bootstrapSpawn?: typeof fork } = {},
-) {
+export async function startSaas(config: SaasConfig, options: { spawn?: typeof fork } = {}) {
   validate(config);
   const csp = config.webRoot
     ? (await readFile(join(config.webRoot, "index.html"), "utf8")).match(
@@ -124,13 +118,6 @@ export async function startSaas(
     csrfKey: createHmac("sha256", key).update("tg-bridge/bootstrap/csrf/v1").digest(),
   });
   const continuations = new OAuthContinuations();
-  const loginAttempts = new TelegramAuthAttempts({
-    auth,
-    store,
-    vault,
-    createWorker: () =>
-      new TelegramAuthWorker({ budget, apiId: config.apiId, apiHash: config.apiHash, spawn: options.bootstrapSpawn }),
-  });
   let gateway: Awaited<ReturnType<typeof createHttpGateway>>;
   try {
     gateway = await createHttpGateway({
@@ -138,7 +125,7 @@ export async function startSaas(
       storageDir: join(config.authDir, "oauth"),
       version: config.version,
       identity: createSaasIdentity(store, auth, supervisor),
-      unifiedLogin: { contexts, continuations },
+      cabinetLogin: { contexts, continuations },
       isHealthy: () => !closing,
       trustProxy: 1,
       allowedOrigins: config.allowedOrigins,
@@ -154,19 +141,9 @@ export async function startSaas(
     supervisor,
     publicUrl: config.publicUrl,
     revokeGrants: gateway.revokeGrants,
+    oauth: { contexts, continuations },
     purgeUserFiles: (userId) => rm(join(config.filesRoot, userId), { recursive: true, force: true }),
   });
-  const telegramAuthRoutes = createTelegramAuthRoutes({
-    auth,
-    store,
-    vault,
-    attempts: loginAttempts,
-    contexts,
-    continuations,
-    publicUrl: config.publicUrl,
-    revokeGrants: gateway.revokeGrants,
-  });
-  gateway.app.use("/api/saas/telegram-auth", telegramAuthRoutes);
   gateway.app.use("/api/saas", routes);
   const app = express();
   app.disable("x-powered-by");
@@ -186,7 +163,6 @@ export async function startSaas(
     const workers = supervisor.close(); // forbid admission before draining browser attempts
     closePromise = (async () => {
       try {
-        await telegramAuthRoutes.close();
         contexts.close();
         continuations.close();
         await routes.close();

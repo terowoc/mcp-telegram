@@ -40,7 +40,7 @@ async function setup(unified = false) {
       ownerPasswordHash: await hashPassword(password),
       callTool: async () => ({ content: [{ type: "text", text: "legacy owner" }] }),
       identity: owner ? undefined : identity,
-      unifiedLogin: unified ? { contexts, continuations } : undefined,
+      cabinetLogin: unified ? { contexts, continuations } : undefined,
     });
     server = gateway.app.listen(0, "127.0.0.1");
     await new Promise<void>((r) => server.once("listening", r));

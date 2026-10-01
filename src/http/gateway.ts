@@ -20,7 +20,7 @@ export interface GatewayOptions {
   isHealthy?: () => boolean;
   allowedOrigins?: string[];
   trustProxy?: string | number;
-  unifiedLogin?: { contexts: BootstrapContexts; continuations: OAuthContinuations };
+  cabinetLogin?: { contexts: BootstrapContexts; continuations: OAuthContinuations };
 }
 
 const escapeHtml = (value: unknown) =>
@@ -52,7 +52,7 @@ export async function createHttpGateway(options: GatewayOptions) {
     authenticationBinding: identity.authenticationBinding,
   });
   const policy = interactionPolicy.base();
-  if (options.unifiedLogin) {
+  if (options.cabinetLogin) {
     policy.get("login")?.checks.add(
       new interactionPolicy.Check(
         "cabinet_session",
@@ -220,8 +220,8 @@ export async function createHttpGateway(options: GatewayOptions) {
         .split(" ")
         .includes("login") || maxAge === 0;
     const freshSince =
-      forced && interaction.prompt.name === "login" && options.unifiedLogin
-        ? options.unifiedLogin.continuations.freshSince(interaction.uid, interaction.exp * 1000)
+      forced && interaction.prompt.name === "login" && options.cabinetLogin
+        ? options.cabinetLogin.continuations.freshSince(interaction.uid, interaction.exp * 1000)
         : undefined;
     if (!browser) return undefined;
     if (freshSince !== undefined && browser.authenticatedAt <= freshSince) return undefined;
@@ -247,11 +247,11 @@ export async function createHttpGateway(options: GatewayOptions) {
     const prompt = interaction.prompt.name;
     const browser = browserFor(req, interaction);
     const useSession = !!browser && (prompt === "login" || interaction.session?.accountId !== browser.accountId);
-    const needsUnified = !!options.unifiedLogin && (!browser || useSession || prompt === "login");
+    const needsCabinet = !!options.cabinetLogin && (!browser || useSession || prompt === "login");
     let loginEntry = "";
-    if (needsUnified && !useSession && options.unifiedLogin) {
-      const context = options.unifiedLogin.contexts.ensure(req, res);
-      const handle = options.unifiedLogin.continuations.create({
+    if (needsCabinet && !useSession && options.cabinetLogin) {
+      const context = options.cabinetLogin.contexts.ensure(req, res);
+      const handle = options.cabinetLogin.continuations.create({
         interactionUid: interaction.uid,
         clientId: String(interaction.params.client_id),
         contextHash: context.contextHash,
@@ -261,18 +261,18 @@ export async function createHttpGateway(options: GatewayOptions) {
             .split(" ")
             .includes("login") || interaction.params.max_age !== undefined,
       });
-      const entry = `/?mcp_login=${encodeURIComponent(handle)}`;
-      loginEntry = `<p><a href="${entry}">Войти через Telegram</a></p><p><a href="${entry}&amp;mcp_legacy=1">Войти в прежний кабинет</a></p>`;
+      const entry = `/?mcp_login=${encodeURIComponent(handle)}&reauth=1`;
+      loginEntry = `<p><a href="${entry}">Войти или зарегистрироваться в Telegram MCP</a></p>`;
     }
     const legacyFields =
-      prompt === "login" && !useSession && !options.unifiedLogin
-        ? `${identity.kind === "saas" ? '<label>Логин TG Bridge<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль TG Bridge" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>`
+      prompt === "login" && !useSession && !options.cabinetLogin
+        ? `${identity.kind === "saas" ? '<label>Логин Telegram MCP<input name="login" autocomplete="username" required maxlength="32"></label>' : ""}<label>${identity.kind === "saas" ? "Пароль Telegram MCP" : "Пароль владельца"}<input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label>`
         : "";
     const formCsrf =
       useSession && browser
         ? sessionCsrf(interaction.uid, browser)
         : csrfFor(interaction.uid, prompt, interaction.session?.accountId);
-    const isConsent = prompt === "consent" && !useSession && (!options.unifiedLogin || !!browser);
+    const isConsent = prompt === "consent" && !useSession && (!options.cabinetLogin || !!browser);
     const form = `<form method="post" action="/interaction/${escapeHtml(interaction.uid)}"><input type="hidden" name="csrf" value="${formCsrf}">${useSession ? '<input type="hidden" name="use_session" value="yes">' : ""}${legacyFields}${useSession || isConsent || legacyFields ? `<button name="approve" value="yes">${isConsent ? "Разрешить доступ" : useSession ? "Продолжить с текущим аккаунтом" : "Войти"}</button>` : ""} <button name="approve" value="no">Отказать</button></form>`;
     const callback = new URL(String(interaction.params.redirect_uri ?? client?.redirectUris?.[0] ?? origin));
     const callbackSource = callback.origin === "null" ? callback.protocol : callback.origin;
@@ -343,8 +343,8 @@ export async function createHttpGateway(options: GatewayOptions) {
         return;
       }
       if (interaction.prompt.name === "login") {
-        if (options.unifiedLogin) {
-          res.status(401).send("Войдите через кабинет Telegram");
+        if (options.cabinetLogin) {
+          res.status(401).send("Войдите в кабинет Telegram MCP");
           return;
         }
         const accountId =
@@ -366,7 +366,7 @@ export async function createHttpGateway(options: GatewayOptions) {
         );
       } else if (interaction.prompt.name === "consent") {
         const accountId = interaction.session?.accountId;
-        if (!accountId || !identity.isActive(accountId) || (options.unifiedLogin && browser?.accountId !== accountId)) {
+        if (!accountId || !identity.isActive(accountId) || (options.cabinetLogin && browser?.accountId !== accountId)) {
           res.sendStatus(403);
           return;
         }

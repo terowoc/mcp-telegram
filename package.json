@@ -42,12 +42,8 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "web:build": "node scripts/build-web.mjs production",
-    "web:build:mocked": "node scripts/build-web.mjs mocked",
-    "web:dev": "node scripts/build-web.mjs dev",
-    "web:dev:mocked": "node scripts/build-web.mjs dev:mocked",
-    "web:check": "npm --prefix apps/web run check",
-    "web:test": "npm --prefix apps/web run test --",
-    "web:test:playwright": "npm --prefix apps/web run test:playwright --"
+    "web:dev": "node scripts/serve-dashboard.mjs",
+    "web:check": "tsc -p apps/dashboard/tsconfig.json --noEmit"
   },
   "keywords": [
     "mcp",

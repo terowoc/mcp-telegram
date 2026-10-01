@@ -73,7 +73,7 @@ export function createSaasIdentity(
       if (!store.getEncryptedSession(id)) {
         if (name !== "telegram-status") throw new Error("Telegram setup required");
         return {
-          content: [{ type: "text", text: "Not connected. Open the MCP section in TG Bridge to connect Telegram." }],
+          content: [{ type: "text", text: "Not connected. Open your Telegram MCP cabinet to connect Telegram." }],
         };
       }
       return supervisor.call(id, name, args, options);

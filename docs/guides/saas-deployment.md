@@ -1,14 +1,14 @@
 # Развёртывание бесплатного SaaS
 
-Приложение обслуживает Telegram Web A, личный кабинет и защищённый MCP endpoint на одном HTTPS-домене. Docker Compose использует только проект `mcp-telegram`, сервис `mcp` и порт `127.0.0.1:18770`. Nginx проксирует этот порт; другие проекты не участвуют в развёртывании.
+Приложение обслуживает кабинет в стиле Telegram и защищённый MCP endpoint на одном HTTPS-домене. Docker Compose использует только проект `mcp-telegram`, сервис `mcp` и порт `127.0.0.1:18770`. Nginx проксирует этот порт; другие проекты не участвуют в развёртывании.
 
 ## Реквизиты и первое включение
 
-В GitHub Actions задайте публичные переменные `WEB_TELEGRAM_API_ID` и `WEB_TELEGRAM_API_HASH` приложения Telegram. Они попадут в JS-сборку. Сборка без них завершается ошибкой. Серверные `TELEGRAM_API_ID/HASH` задаются в `telegram.env` на VPS и автоматически не копируются в frontend. По явному решению владельца можно указать одинаковые значения для браузера и сервера, принимая публичность браузерного hash. Значения 2FA не задаются в окружении SaaS: пользователь вводит пароль в конкретной попытке QR-входа.
+Frontend собирается из `apps/dashboard` стандартным TypeScript без отдельного install. В браузере нет Telegram API, MTProto или сессии Telegram; API_ID/API_HASH нужны только серверу в `telegram.env`. Для сборки: `npm ci && npm run web:build`; проверка типов: `npm run web:check`. Пользователь вводит Telegram 2FA только во время серверного QR-подключения.
 
 Установите проверенные `scripts/deploy-vps.sh` и `scripts/initialize-saas.sh` в приватный `/opt/mcp-telegram`, сохранив существующий forced SSH command и права root. Выполните инициализацию от root из этого каталога. Она создаёт новый 32-байтный `session-key.bin` с правами 0600 и владельцем 1000, а также отдельную приватную резервную копию. Существующий ключ не заменяется. Не публикуйте ключ, резервную копию, `telegram.env` или базы.
 
-Старые owner-only OAuth разрешения остаются в старом каталоге для отката. Новые пользователи входят через Telegram Web A и при желании отмечают «Также подключить MCP». Браузер подтверждает свежий серверный токен без второго QR; ключи браузерной сессии не переносятся. Сервер проверяет getMe и создаёт кабинет без пароля. Прежние кабинеты связываются только с явным подтверждением их пароля. OAuth-согласие остаётся обязательным.
+Пользователь регистрируется с логином и паролем, сохраняет коды восстановления и подключает свой Telegram по серверному QR. Все MCP-клиенты используют одну серверную сессию. OAuth ведёт к входу в тот же кабинет, после чего пользователь явно разрешает клиенту доступ. Старые аккаунты сервиса удаляются при этом выпуске по указанию владельца.
 
 ## Ограничение ресурсов
 
@@ -26,21 +26,21 @@ GitHub Actions выполняет только сборку и деплой: п�
 
 ## Проверка после публикации
 
-Проверьте `/healthz`, корневой интерфейс, `/source/LICENSE.txt`, discovery и 401 на неавторизованном `/mcp`. Для настоящей проверки войдите в Telegram в браузере, отметив «Также подключить MCP», или подключите текущий аккаунт из раздела MCP. Обычно второй QR не нужен; Telegram может запросить серверную 2FA. Изолированные автоматические проверки используют синтетические сессии и не подтверждают настоящий вход Telegram. Убедитесь, что кабинет показывает правильный аккаунт и сохраняет MCP-сессию после перезапуска только этого сервиса. Проверка не требует отправки настоящих сообщений.
+Проверьте `/healthz`, страницу регистрации, discovery и 401 на неавторизованном `/mcp`. Зарегистрируйтесь, сохраните recovery-коды и подключите Telegram по QR; при необходимости введите облачный пароль Telegram. Кабинет должен показать один серверный аккаунт и данные MCP. Проверки на синтетических сессиях не подтверждают настоящий вход Telegram. Проверка не требует отправки сообщений.
 
 ## Recovery and storage bounds
 
 Password recovery replaces all eight recovery codes atomically and displays the new set once. Save them before leaving the panel. Previous SaaS cookies, OAuth login sessions, pending consent, access grants and refresh tokens lose access; OAuth must authenticate with the recovered password.
 
-MCP media downloads have a 20 MiB file limit, 100 MiB / 100 files per user and 500 MiB / 1000 files across the service. Admission reserves a full file before dispatch, retains that reservation until the worker physically settles, and leaves at least 256 MiB free on the media filesystem. Stored files count after restart. Quota errors refuse the download before writing; deleting a TG Bridge account purges its media. Administrators can remove expired media during maintenance after stopping the target service. These bounds cover the application media volume, not disk growth from unrelated projects or logs.
+MCP media downloads have a 20 MiB file limit, 100 MiB / 100 files per user and 500 MiB / 1000 files across the service. Admission reserves a full file before dispatch, retains that reservation until the worker physically settles, and leaves at least 256 MiB free on the media filesystem. Stored files count after restart. Quota errors refuse the download before writing; deleting a Telegram MCP account purges its media. Administrators can remove expired media during maintenance after stopping the target service. These bounds cover the application media volume, not disk growth from unrelated projects or logs.
 
 `MCP_ALLOWED_ORIGINS` is a comma-separated list of exact HTTPS origins for browser MCP requests. It applies to `/mcp`; browser SaaS account mutations still require the application's own origin and CSRF token.
 
-При обновлении схема SaaS переходит с v2 на v3. Снимок до остановленного обновления должен включать обе базы с WAL, конфигурацию и image digest. Временные процессы единого входа расходуют общий лимит worker (на текущем VPS — 2) и завершаются до закрытия баз. Ключ шифрования сохраняется за пределами снимка и не меняется при миграции.
+
 
 ## Производительность MCP
 
-Соединение аккаунта сохраняется до 30 минут простоя (`MCP_SAAS_WORKER_IDLE_MS`, допустимо от 60 000 до 3 600 000 мс). При заполнении общего лимита новый аккаунт или временный процесс входа может вытеснить самый давно использованный свободный worker. Занятые, запускающиеся и завершающиеся процессы не вытесняются. Место освобождается только после фактического выхода процесса; лимит CPU и памяти не повышается.
+Соединение аккаунта сохраняется до 30 минут простоя (`MCP_SAAS_WORKER_IDLE_MS`, допустимо от 60 000 до 3 600 000 мс). При заполнении общего лимита новый аккаунт может вытеснить самый давно использованный свободный worker. Занятые, запускающиеся и завершающиеся процессы не вытесняются. Место освобождается только после фактического выхода процесса; лимит CPU и памяти не повышается.
 
 На аккаунт выполняется одна операция. До четырёх следующих вызовов могут ждать в FIFO-очереди не больше пяти секунд. Ожидание, запуск и исполнение входят в общий срок 34 секунды; отдельный исполнитель сохраняет срок 28 секунд. Отмена не освобождает процесс или медиаквоту до завершения реальной операции. Чтение inbox и обогащение результатов поиска выполняются максимум по три одновременно, сохраняя порядок и дожидаясь завершения всех начатых обращений при ошибке.
 

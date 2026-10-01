@@ -16,15 +16,15 @@
 
 **Telegram MCP Server** — a Model Context Protocol server that connects AI assistants like Claude and ChatGPT to Telegram via the MTProto protocol. Unlike bots, this runs as a **userbot** -- it operates under your personal Telegram account using [GramJS](https://github.com/nicedoc/gramjs), giving full access to your chats, contacts, and message history.
 
-## TG Bridge: free SaaS and Telegram Web A
+## Telegram MCP: free SaaS dashboard
 
-This fork includes a pinned GPL Telegram Web A frontend with real browser chats and a separate MCP account panel. Public registration creates isolated accounts with encrypted server device sessions, per-user permissions, OAuth grants and bounded workers. Browser Telegram authorization stays in Web A; MCP has its own QR/2FA device login.
+This fork includes a lightweight Telegram-style MCP cabinet. Register an account, save recovery codes, and connect your Telegram once using a server QR and optional 2FA. The browser runs no Telegram Web client and stores no Telegram session. All authorized MCP clients use the account's encrypted server session.
 
-- [Frontend build and account setup](docs/guides/web-a.md)
+- [Dashboard build and account setup](docs/guides/web-a.md)
 - [SaaS API and storage](docs/guides/saas.md)
 - [Scoped production deployment and coherent rollback](docs/guides/saas-deployment.md)
 
-The complete image runs `saas`. Existing stdio, daemon, login and single-owner HTTP CLI modes remain available. Frontend builds require explicit public browser-app inputs and never inherit server environment files. The owner can authorize the same application values for browser and server. GitHub Actions runs only image build and VPS deployment; health checks and automatic rollback remain enabled.
+The image runs `saas`. Existing stdio, daemon, login and single-owner HTTP modes remain available. `npm run web:build` uses the root TypeScript dependency and needs no Telegram credentials. GitHub Actions runs only image build and VPS deployment; health checks and automatic rollback remain enabled.
 
 ## Features
 
@@ -501,7 +501,3 @@ Then set `TELEGRAM_SESSION_PATH` in each environment's MCP config accordingly.
 ## License
 
 MIT
-
-## TG Bridge frontend licensing
-
-The Telegram Web A frontend in `apps/web` is a GPL-3.0-or-later fork of [Ajaxy/telegram-tt](https://github.com/Ajaxy/telegram-tt), pinned in [UPSTREAM.md](apps/web/UPSTREAM.md). Its copyright and license notices remain in place. The MCP backend retains its MIT license. Frontend builds require explicit public browser application inputs and never inherit server environment files. The owner can authorize the same Telegram application for both, accepting a public browser API hash. See [SaaS deployment and API contract](docs/guides/saas.md).
