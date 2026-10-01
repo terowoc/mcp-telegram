@@ -65,9 +65,13 @@ export class McpPanelController {
   }
 
   setVisible(isVisible: boolean) {
+    const wasVisible = this.isVisible;
     this.isVisible = isVisible;
     this.stopPolling();
-    if (isVisible) this.schedulePoll();
+    if (isVisible && !wasVisible && this.isOpen) {
+      this.resetState();
+      void this.refresh().then(() => this.schedulePoll());
+    } else if (isVisible) this.schedulePoll();
   }
 
   async refresh() {

@@ -139,7 +139,7 @@ export class TelegramAuthAttempts {
       });
       attempt.view.state = "success";
       this.release(attempt);
-      return result;
+      return { ...result, linked: plan.action === "link" };
     } catch (error) {
       await this.terminate(attempt, "error");
       throw error;

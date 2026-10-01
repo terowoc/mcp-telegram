@@ -237,6 +237,21 @@ export class SaasStore {
       throw new Error("Telegram session required before saving identity");
   }
 
+  putVerifiedTelegramSession(userId: string, envelope: string, account: { id: string; username?: string }): void {
+    this.transaction(() => {
+      this.active(userId);
+      const bound = this.db.prepare("SELECT telegram_id FROM telegram_identities WHERE user_id=?").get(userId) as
+        | { telegram_id: string }
+        | undefined;
+      if (bound && bound.telegram_id !== account.id) throw new Error("Telegram identity mismatch");
+      this.db
+        .prepare(
+          "INSERT INTO telegram_sessions(user_id,envelope,account_json) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET envelope=excluded.envelope,account_json=excluded.account_json",
+        )
+        .run(userId, envelope, JSON.stringify(account));
+    });
+  }
+
   updatePolicy(userId: string, policy: UserPolicy): number {
     if (
       !["read", "full"].includes(policy.profile) ||

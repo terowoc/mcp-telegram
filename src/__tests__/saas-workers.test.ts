@@ -289,3 +289,82 @@ test("media admission remains reserved across cancellation until physical settle
     s.store.close();
   }
 });
+
+test("rejected legacy reconnect preserves the bound session and next worker identity", async () => {
+  const s = setup();
+  try {
+    const user = s.users[0];
+    s.store.putTelegramAccount(user.id, { id: "111" });
+    s.store.commitTelegramLogin(s.store.planTelegramLogin({ id: "111" }, user.id), {
+      account: { id: "111" },
+      envelope: s.vault.encrypt(user.id, "session-A"),
+      browserSession: {
+        idHash: "fixture",
+        csrfHash: "fixture",
+        expiresAt: Date.now() + 10000,
+        authenticatedAt: Date.now(),
+      },
+    });
+    const before = s.store.getEncryptedSession(user.id);
+    const login = s.supervisor.startLogin(user.id, "attempt", () => {}).catch((error) => error);
+    await waitFor(() => s.children[0]?.sent.some((m) => m.kind === "login-start") === true);
+    const child = s.children[0];
+    const request = child.sent.find((m) => m.kind === "login-start");
+    assert.ok(request && "id" in request);
+    child.emit("message", { kind: "session-save", generation: request.generation, id: "save", session: "session-B" });
+    child.emit("message", {
+      kind: "event",
+      generation: request.generation,
+      id: request.id,
+      attemptId: "attempt",
+      event: { type: "success", account: { id: "222" } },
+    });
+    assert.ok((await login) instanceof Error);
+    assert.equal(s.store.getEncryptedSession(user.id), before);
+    assert.equal(s.store.getTelegramAccount(user.id)?.id, "111");
+    const call = s.supervisor.call(user.id, "telegram-status", {});
+    await waitFor(() => s.children[1]?.sent.length === 2);
+    const init = s.children[1].sent[0];
+    assert.ok(init.kind === "init");
+    assert.equal(init.session, "session-A");
+    s.children[1].reply();
+    await call;
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});
+
+test("verified matching legacy reconnect atomically replaces its session and metadata", async () => {
+  const s = setup();
+  try {
+    const user = s.users[0];
+    const login = s.supervisor.startLogin(user.id, "attempt", () => {});
+    await waitFor(() => s.children[0]?.sent.some((m) => m.kind === "login-start") === true);
+    const child = s.children[0];
+    const request = child.sent.find((m) => m.kind === "login-start");
+    assert.ok(request && "id" in request);
+    const before = s.store.getEncryptedSession(user.id);
+    child.emit("message", {
+      kind: "session-save",
+      generation: request.generation,
+      id: "save",
+      session: "verified-session",
+    });
+    assert.equal(s.store.getEncryptedSession(user.id), before, "login persistence waits for getMe identity");
+    child.emit("message", {
+      kind: "event",
+      generation: request.generation,
+      id: request.id,
+      attemptId: "attempt",
+      event: { type: "success", account: { id: "111" } },
+    });
+    child.reply(child.sent.indexOf(request), { success: true });
+    await login;
+    assert.equal(s.vault.decrypt(user.id, s.store.getEncryptedSession(user.id)!), "verified-session");
+    assert.equal(s.store.getTelegramAccount(user.id)?.id, "111");
+  } finally {
+    await s.supervisor.close();
+    s.store.close();
+  }
+});

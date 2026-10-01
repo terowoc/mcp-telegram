@@ -15,7 +15,7 @@ import { createTelegramAuthRoutes } from "../saas/telegram-auth-routes.js";
 import { CapacityError } from "../saas/worker-budget.js";
 
 const origin = "https://mcp.example.test";
-async function setup() {
+async function setup(revoke: (ids: string[]) => Promise<void> = async () => {}) {
   const store = createSaasStore(":memory:"),
     auth = new SaasAuth(store, { csrfKey: randomBytes(32) }),
     vault = new SessionVault(randomBytes(32));
@@ -48,7 +48,7 @@ async function setup() {
     contexts,
     continuations,
     publicUrl: origin,
-    revokeGrants: async () => {},
+    revokeGrants: revoke,
   });
   const saas = createSaasRoutes({
     auth,
@@ -342,6 +342,79 @@ test("bootstrap revocation fences a completion already awaiting worker exit", as
   } finally {
     assert.ok(release);
     release();
+    await s.close();
+  }
+});
+
+test("revocation during provider cleanup does not issue or retain a cabinet session", async () => {
+  let release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>((r) => {
+    release = r;
+  });
+  const entering = new Promise<void>((r) => {
+    entered = r;
+  });
+  const s = await setup(async () => {
+    entered();
+    await waiting;
+  });
+  try {
+    const old = await s.auth.register("alice", "a long private legacy password");
+    s.store.putEncryptedSession(old.userId, s.vault.encrypt(old.userId, "synthetic"));
+    s.store.putTelegramAccount(old.userId, { id: "12345" });
+    s.store.bindGrant(old.userId, "test-grant", "test-client", 1);
+    const jar = s.jar();
+    await jar.legacy("alice", "a long private legacy password");
+    await jar.context();
+    const { body } = await jar.start();
+    s.verify(body.id);
+    const completing = jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+      legacyPassword: "a long private legacy password",
+    });
+    await entering;
+    assert.equal((await jar.request("/telegram-auth/revoke", "POST", {})).status, 204);
+    release();
+    const result = await completing;
+    assert.equal(result.status, 401);
+    assert.equal(
+      result.headers.getSetCookie().some((c) => c.startsWith("__Host-mcp-saas=")),
+      false,
+    );
+    assert.equal((await jar.request("/me")).status, 401);
+  } finally {
+    release();
+    await s.close();
+  }
+});
+
+test("repeat login to a linked legacy cabinet preserves provider and store grants", async () => {
+  const revoked: string[] = [];
+  const s = await setup(async (ids) => {
+    revoked.push(...ids);
+  });
+  try {
+    const old = await s.auth.register("alice", "a long private legacy password");
+    s.auth.completeTelegramLogin(
+      { attemptId: "link", account: { id: "12345" }, session: "synthetic", authenticatedAt: Date.now() },
+      { vault: s.vault, legacyUserId: old.userId },
+    );
+    s.store.bindGrant(old.userId, "existing-client-grant", "client", 1);
+    const jar = s.jar();
+    await jar.legacy("alice", "a long private legacy password");
+    await jar.context();
+    const { body } = await jar.start();
+    s.verify(body.id);
+    assert.equal(
+      (
+        await jar.request(`/telegram-auth/${body.id}/complete`, "POST", {
+          legacyPassword: "a long private legacy password",
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(revoked, []);
+    assert.ok(s.store.findGrant("existing-client-grant"));
+  } finally {
     await s.close();
   }
 });

@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import express, { type ErrorRequestHandler, type Request } from "express";
 import { rateLimit } from "express-rate-limit";
-import Provider, { type Configuration, errors } from "oidc-provider";
+import Provider, { type Configuration, errors, interactionPolicy } from "oidc-provider";
 import type { BootstrapContexts } from "../saas/bootstrap-contexts.js";
 import type { OAuthContinuations } from "../saas/oauth-continuations.js";
 import { type GatewayIdentity, ownerIdentity } from "./identity.js";
@@ -51,6 +51,21 @@ export async function createHttpGateway(options: GatewayOptions) {
   const Adapter = createAdapter(join(options.storageDir, "oauth.sqlite"), {
     authenticationBinding: identity.authenticationBinding,
   });
+  const policy = interactionPolicy.base();
+  if (options.unifiedLogin) {
+    policy.get("login")?.checks.add(
+      new interactionPolicy.Check(
+        "cabinet_session",
+        "Current cabinet authentication is required",
+        "login_required",
+        (ctx) => {
+          const browser = identity.browserAuthentication?.(ctx.headers.cookie ?? "");
+          const accountId = ctx.oidc.result?.login?.accountId ?? ctx.oidc.session?.accountId;
+          return !browser || browser.accountId !== accountId || browser.binding !== ctx.oidc.acr;
+        },
+      ),
+    );
+  }
   const config: Configuration = {
     adapter: Adapter,
     jwks: secrets.jwks,
@@ -76,7 +91,7 @@ export async function createHttpGateway(options: GatewayOptions) {
       Session: 86400,
       Grant: 30 * 86400,
     },
-    interactions: { url: (_ctx, interaction) => `${origin}/interaction/${interaction.uid}` },
+    interactions: { policy, url: (_ctx, interaction) => `${origin}/interaction/${interaction.uid}` },
     findAccount: (_ctx, id, token) => identity.findAccount(id, token?.grantId),
     loadExistingGrant: async (ctx) => {
       const grantId =

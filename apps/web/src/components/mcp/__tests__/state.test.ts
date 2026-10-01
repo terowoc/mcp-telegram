@@ -185,3 +185,27 @@ describe('ephemeral MCP panel lifecycle', () => {
     controller.hide();
   });
 });
+
+describe('returning to an old tab', () => {
+  it('clears cached cabinet state and revalidates its cookie before resuming', async () => {
+    let active = true;
+    const request = vi.fn(async (path) => {
+      await Promise.resolve();
+      if (path.endsWith('/me')) {
+        if (!active) throw new McpApiError(401, 'authentication-required');
+        return ME;
+      }
+      return { clients: [] };
+    });
+    const controller = new McpPanelController({ request });
+    await controller.show();
+    controller.setVisible(false);
+    active = false;
+    controller.setVisible(true);
+    expect(controller.getState().me).toBeUndefined();
+    await flush();
+    expect(controller.getState().isSignedOut).toBe(true);
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/me'))).toHaveLength(2);
+    controller.hide();
+  });
+});

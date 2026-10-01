@@ -536,3 +536,40 @@ test("recovery fences remembered OAuth cookies and already displayed consent", a
     await s.close();
   }
 });
+
+test("remembered OAuth session cannot silently authorize a switched or logged-out cabinet", async () => {
+  const s = await setup(true);
+  try {
+    const first = await s.authorize("alice", undefined, s.alice.sessionToken);
+    const params = {
+      client_id: first.client.client_id,
+      redirect_uri: "https://client.example/callback",
+      response_type: "code",
+      scope: "mcp:tools",
+      resource: origin + "/mcp",
+      code_challenge: createHash("sha256").update("v".repeat(43)).digest("base64url"),
+      code_challenge_method: "S256",
+    };
+    const same = await first.request("/oauth/auth?" + new URLSearchParams({ ...params, prompt: "none" }));
+    assert.ok(
+      new URL(same.headers.get("location")!, origin).searchParams.get("code"),
+      "same active cabinet may reuse its grant",
+    );
+    first.request.setCabinet(s.bob.sessionToken);
+    for (const prompt of ["none", ""]) {
+      const response = await first.request(
+        "/oauth/auth?" + new URLSearchParams({ ...params, ...(prompt ? { prompt } : {}) }),
+      );
+      const target = new URL(response.headers.get("location")!, origin);
+      assert.equal(target.searchParams.get("code"), null);
+      if (prompt) assert.equal(target.searchParams.get("error"), "login_required");
+      else assert.equal(target.origin, origin);
+    }
+    first.request.setCabinet(s.alice.sessionToken);
+    s.auth.logout(s.alice.sessionToken);
+    const loggedOut = await first.request("/oauth/auth?" + new URLSearchParams({ ...params, prompt: "none" }));
+    assert.equal(new URL(loggedOut.headers.get("location")!, origin).searchParams.get("error"), "login_required");
+  } finally {
+    await s.close();
+  }
+});

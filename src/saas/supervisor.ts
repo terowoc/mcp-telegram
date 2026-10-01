@@ -38,6 +38,7 @@ interface Pending {
   settling?: boolean;
   onEvent?: (event: LoginEvent) => void;
   attemptId?: string;
+  stagedSession?: string;
   releaseMedia?: () => void;
 }
 interface Slot {
@@ -194,9 +195,13 @@ export class WorkerSupervisor {
       try {
         const user = this.options.store.findUser(slot.userId);
         if (!user || user.disabled) throw new Error("Inactive user");
-        if (message.kind === "session-save")
+        const login = [...slot.pending.values()].find((p) => p.attemptId);
+        if (login) {
+          // QR login saves before getMe. Keep its session private until identity is verified.
+          login.stagedSession = message.kind === "session-save" ? message.session : undefined;
+        } else if (message.kind === "session-save") {
           this.options.store.putEncryptedSession(slot.userId, this.options.vault.encrypt(slot.userId, message.session));
-        else this.options.store.deleteEncryptedSession(slot.userId);
+        } else this.options.store.deleteEncryptedSession(slot.userId);
         ok = true;
       } catch {
         /* do not expose storage or session details */
@@ -213,8 +218,15 @@ export class WorkerSupervisor {
     if (message.kind === "event") {
       if (pending.attemptId === message.attemptId) {
         try {
-          if (message.event.type === "success")
-            this.options.store.putTelegramAccount(slot.userId, message.event.account);
+          if (message.event.type === "success") {
+            if (!pending.stagedSession) throw new Error("Verified session required");
+            this.options.store.putVerifiedTelegramSession(
+              slot.userId,
+              this.options.vault.encrypt(slot.userId, pending.stagedSession),
+              message.event.account,
+            );
+            pending.stagedSession = undefined;
+          }
           pending.onEvent?.(message.event);
         } catch {
           void this.stopSlot(slot);

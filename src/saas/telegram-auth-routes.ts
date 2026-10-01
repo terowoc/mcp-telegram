@@ -218,7 +218,14 @@ export function createTelegramAuthRoutes(options: {
       authorize: () =>
         !!contexts.verify(req, true) && (!legacyUserId || auth.authenticate(saasCookie(req))?.userId === legacyUserId),
     });
-    if (ids.length) await options.revokeGrants(ids).catch(() => {});
+    if (signed.linked && ids.length) await options.revokeGrants(ids).catch(() => {});
+    // Grant cleanup yields after the browser session commit. Account switching must still fence this response.
+    if (!contexts.verify(req, true)) {
+      auth.logout(signed.sessionToken);
+      continuations.delete(String(req.params.id));
+      res.status(401).json({ error: "authentication-required" });
+      return;
+    }
     const continuation = continuationHandle
       ? options.continuations?.consume(continuationHandle, res.locals.bootstrap.contextHash)
       : undefined;
