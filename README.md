@@ -501,4 +501,3 @@ Then set `TELEGRAM_SESSION_PATH` in each environment's MCP config accordingly.
 ## License
 
 MIT
-
