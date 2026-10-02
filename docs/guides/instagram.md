@@ -9,7 +9,11 @@ Telegram connections remain separate. Instagram is disabled by default.
 The production image includes Python 3.11 and a private environment with
 `instagrapi==3.0.18` and hashed, pinned dependencies. Set
 `MCP_INSTAGRAM_ENABLED=1` in the Compose environment, then recreate the
-service through the normal deployment process. The image supplies
+service through the normal deployment process. The deploy script records this
+choice in `deployment.env` and preserves it on later releases. An operator can
+set `MCP_INSTAGRAM_ENABLED=1` for the deployment invocation to enable it, or
+`0` to disable it. The script checks Python before stopping the old service;
+rollback restores the previous flag with its matching release. The image supplies
 `MCP_INSTAGRAM_PYTHON=/opt/instagram/bin/python`.
 
 For local SaaS development, use Python 3.11 or later:
@@ -105,3 +109,27 @@ Automated tests use process and transport fixtures. They do not authenticate
 a real Instagram account or send to anyone. A live login/read smoke check
 needs account-holder participation; a live send additionally needs an
 explicitly authorized recipient/thread. Report those checks separately.
+
+
+## Production account setup
+
+1. Open [the production cabinet](https://tg-mcp.azimboev.uz/) and sign in.
+2. Open **Instagram**, add a connection, then enter your Instagram username
+   and password. Enter a verification code if requested. If your cabinet
+   login is older than five minutes, sign out and sign in before trying.
+3. Start with reading permissions. Confirm that **Instagram подключён**
+   appears. If additional verification is requested, complete it in the
+   official Instagram app, then reconnect in the cabinet.
+4. Open **MCP** and add `https://tg-mcp.azimboev.uz/mcp` as a remote MCP
+   server in your AI client. Complete OAuth and approve the displayed access.
+   Reauthorize existing clients after adding or changing an account.
+5. Ask the AI to list your Instagram accounts, select the returned connection
+   UUID explicitly, list chats, and read one thread. It does not mark it seen.
+6. For your send test, enable **Чтение и отправка сообщений** in that
+   Instagram connection, reauthorize your client, and choose the recipient
+   thread explicitly. Ask for one text reply with a fresh UUID `requestId`.
+   If delivery is unknown, check the thread before attempting another send.
+
+Example reading prompt: “List my Instagram accounts, use connection
+[connection UUID], list its chats, and read the latest 10 messages from
+thread [thread ID].”

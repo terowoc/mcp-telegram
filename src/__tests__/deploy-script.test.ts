@@ -19,7 +19,7 @@ for (const { fail, stopped, stopFailure = false } of [
     const old = `ghcr.io/terowoc/mcp-telegram@sha256:${"b".repeat(64)}`;
     mkdirSync(join(dir, "bin"));
     mkdirSync(join(dir, "data/auth/oauth"), { recursive: true });
-    writeFileSync(join(dir, "deployment.env"), `MCP_IMAGE=${old}\n`);
+    writeFileSync(join(dir, "deployment.env"), `MCP_IMAGE=${old}\nMCP_INSTAGRAM_ENABLED=0\n`);
     writeFileSync(join(dir, "data/auth/saas.sqlite"), "users-v1");
     writeFileSync(join(dir, "data/auth/oauth/oauth.sqlite"), "oauth-v1");
     writeFileSync(join(dir, "session-key.bin"), Buffer.alloc(32, 1), { mode: 0o600 });
@@ -65,7 +65,12 @@ exec /bin/cp "$@"
       cwd: dir,
       encoding: "utf8",
       input: "temporary-registry-token",
-      env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, TEST_LOG: join(dir, "commands") },
+      env: {
+        ...process.env,
+        PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+        TEST_LOG: join(dir, "commands"),
+        MCP_INSTAGRAM_ENABLED: "1",
+      },
     });
     assert.equal(result.status, fail ? 1 : 0, result.stderr);
     const commands = readFileSync(join(dir, "commands"), "utf8");
@@ -84,6 +89,25 @@ exec /bin/cp "$@"
       rolledBack ? "legacy-owner-configuration" : "new-saas-configuration",
     );
     assert.ok(readFileSync(join(dir, "deployment.env"), "utf8").includes(rolledBack ? old : image));
+    const deployment = readFileSync(join(dir, "deployment.env"), "utf8");
+    assert.match(deployment, new RegExp(`MCP_INSTAGRAM_ENABLED=${rolledBack ? "0" : "1"}`));
+    assert.match(commands, /--entrypoint \/opt\/instagram\/bin\/python .*worker\.py --check/);
+    if (!fail) {
+      const repeatedEnv = {
+        ...process.env,
+        PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+        TEST_LOG: join(dir, "commands"),
+      };
+      delete repeatedEnv.MCP_INSTAGRAM_ENABLED;
+      const repeated = spawnSync("bash", [resolve("scripts/deploy-vps.sh"), image], {
+        cwd: dir,
+        encoding: "utf8",
+        input: "temporary-registry-token",
+        env: repeatedEnv,
+      });
+      assert.equal(repeated.status, 0, repeated.stderr);
+      assert.match(readFileSync(join(dir, "deployment.env"), "utf8"), /MCP_INSTAGRAM_ENABLED=1/);
+    }
     assert.doesNotMatch(result.stdout + result.stderr, /temporary-registry-token/);
     if (stopFailure) assert.match(result.stderr, /auth storage left intact/);
     else assert.doesNotMatch(result.stderr, /Rollback failed/);

@@ -10,6 +10,17 @@ else image="${1:-}"; fi
 [[ "$image" =~ ^ghcr\.io/terowoc/mcp-telegram@sha256:[a-f0-9]{64}$ ]] || { echo 'Immutable image required' >&2; exit 2; }
 exec 9>.deploy.lock
 flock -n 9 || { echo 'Deployment already running' >&2; exit 1; }
+# Preserve the explicit production feature choice across releases. Do not
+# export it: rollback must resolve the previous deployment.env independently.
+instagram="${MCP_INSTAGRAM_ENABLED:-}"
+if [[ -z "$instagram" && -f deployment.env ]]; then
+  instagram="$(sed -n 's/^MCP_INSTAGRAM_ENABLED=//p' deployment.env)"
+fi
+instagram="${instagram:-0}"
+[[ "$instagram" == 0 || "$instagram" == 1 ]] || {
+  echo 'Invalid Instagram feature flag; previous service is unchanged' >&2; exit 2;
+}
+unset MCP_INSTAGRAM_ENABLED
 # The master key is provisioned separately, never generated or replaced on deploy.
 python3 - <<'PY'
 import os, stat
@@ -36,7 +47,7 @@ release="releases/${image##*:}-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$release"
 docker run --rm --network none --read-only --memory 64m --cpus 0.25 --pids-limit 16 --entrypoint cat \
   "$image" /app/deployment/compose.production.yaml > "$release/compose.yaml"
-printf 'MCP_IMAGE=%s\nMCP_SAAS_MAX_WORKERS=%s\nMCP_MEMORY_LIMIT=%s\n' "$image" "$workers" "$memory" > "$release/deployment.env"
+printf 'MCP_IMAGE=%s\nMCP_SAAS_MAX_WORKERS=%s\nMCP_MEMORY_LIMIT=%s\nMCP_INSTAGRAM_ENABLED=%s\n' "$image" "$workers" "$memory" "$instagram" > "$release/deployment.env"
 compose() { docker compose --project-directory "$PWD" --env-file deployment.env -f compose.yaml -p mcp-telegram "$@"; }
 docker compose --project-directory "$PWD" --env-file "$release/deployment.env" -f "$release/compose.yaml" -p mcp-telegram config --quiet
 # Validate the same non-root runtime's key access and server config before stopping anything.
@@ -47,6 +58,11 @@ docker run --rm --network none --read-only --memory 256m --cpus 0.25 --pids-limi
   -v "$PWD/session-key.bin:/run/secrets/session-key:ro" --entrypoint node "$image" \
   --max-old-space-size=128 --input-type=module -e \
   'import {configFromEnv} from "./dist/saas/main.js"; import {loadVaultKey} from "./dist/saas/session-vault.js"; const c=configFromEnv(); await loadVaultKey(c.sessionKeyFile);'
+if [[ "$instagram" == 1 ]]; then
+  # Validate the pinned Python runtime before touching the running service.
+  docker run --rm --network none --read-only --memory 256m --cpus 0.25 --pids-limit 16 \
+    --entrypoint /opt/instagram/bin/python "$image" /app/dist/instagram/worker.py --check
+fi
 wait_ready() {
   local container status attempt
   container="$(compose ps -q mcp)" || return 1
@@ -119,5 +135,5 @@ printf '%s\n' "$release" > current-release.tmp
 mv current-release.tmp current-release
 changed=false
 trap - ERR INT TERM
-printf 'Deployed %s (workers=%s, memory=%s)\n' "$image" "$workers" "$memory"
+printf 'Deployed %s (workers=%s, memory=%s, instagram=%s)\n' "$image" "$workers" "$memory" "$instagram"
 # Versioned release configurations, failed auth directories and backups are retained.
