@@ -31,6 +31,7 @@ test("Instagram browser routes enforce CSRF/ownership and omit all session secre
       }
     },
     cancelLogin: async () => {},
+    submitCode: () => {},
     attempt: () => undefined,
   } as unknown as InstagramSupervisor;
   const telegram = {
@@ -39,6 +40,7 @@ test("Instagram browser routes enforce CSRF/ownership and omit all session secre
     startLogin: async () => {},
     submitPassword: () => {},
     cancelLogin: async () => {},
+    submitCode: () => {},
     stopUser: async () => {},
   };
   const router = createSaasRoutes({
@@ -81,6 +83,9 @@ test("Instagram browser routes enforce CSRF/ownership and omit all session secre
     });
     assert.equal(login.status, 202);
     assert.doesNotMatch(await login.text(), /password|private/);
+    const code = await request(`/instagram/accounts/${c.id}/login/${randomUUID()}/code`, "POST", { code: "123456" });
+    assert.equal(code.status, 202);
+    assert.deepEqual(await code.json(), { accepted: true });
     assert.equal(
       (
         await request(`/instagram/accounts/${c.id}/login`, "POST", {
@@ -154,6 +159,7 @@ test("cabinet deletion drains a real pending Instagram login before deleting its
     startLogin: async () => {},
     submitPassword: () => {},
     cancelLogin: async () => {},
+    submitCode: () => {},
     stopUser: async () => {},
   };
   const router = createSaasRoutes({

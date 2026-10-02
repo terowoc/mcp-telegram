@@ -286,7 +286,9 @@ export async function runSaas() {
     const stopped = new Promise<void>((resolve) => listener.close(() => resolve()));
     listener.closeIdleConnections();
     try {
-      await service.close();
+      // Workers and stores drain first. Partial HTTP bodies must not keep the
+      // listener alive until Docker's hard kill deadline.
+      await service.close().finally(() => listener.closeAllConnections());
       await stopped;
     } catch {
       process.exitCode = 1;

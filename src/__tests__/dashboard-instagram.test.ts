@@ -52,7 +52,7 @@ test("Instagram password/code submissions use explicit routes and clear sensitiv
     }
     if (path.endsWith("/code")) {
       calls.push({ path, body });
-      return new Response(null, { status: 202 });
+      return new Response(JSON.stringify({ accepted: true }), { status: 202 });
     }
     return new Response(JSON.stringify({ attempt: undefined }));
   });
@@ -65,6 +65,7 @@ test("Instagram password/code submissions use explicit routes and clear sensitiv
   await d.submit("instagramCodeForm", { instagramCode: "123456" });
   assert.equal(calls[1].path, `/instagram/accounts/${id}/login/attempt/code`);
   assert.doesNotMatch(d.html(), /value="123456"/);
+  assert.doesNotMatch(d.html(), /Не удалось связаться с сервером/);
 });
 test("disabled Instagram cannot open through a saved hash", async () => {
   const state = cabinet();
