@@ -25,6 +25,16 @@ def error_code(error):
     if "Code" in name or "TwoFactor" in name: return "invalid-code"
     return "worker-unavailable"
 
+def login_diagnostic(error,client,phase):
+    # Never include exception text, request data, usernames or raw URLs.
+    reasons={"PleaseWaitFewMinutes":"please-wait","ClientThrottledError":"throttled","RateLimitError":"throttled","FeedbackRequired":"action-blocked","BadPassword":"credentials","BadCredentials":"credentials","TwoFactorRequired":"two-factor"}
+    step=getattr(client,"login_request_step","other")
+    if step not in {"device","authentication","feed","account","other"}: step="other"
+    result={"phase":phase,"reason":reasons.get(type(error).__name__,"other"),"step":step}
+    status=getattr(getattr(error,"response",None),"status_code",None)
+    if isinstance(status,int) and not isinstance(status,bool) and 100<=status<=599: result["httpStatus"]=status
+    return result
+
 def identity(value):
     result = {"id": str(value.pk)}
     if value.username: result["username"] = str(value.username)[:64]
@@ -45,9 +55,14 @@ def configure(client):
 def make_client():
     from instagrapi import Client
     class SingleAttemptClient(Client):
+        def private_graphql_www_request(self,*args,**kwargs):
+            # Device registration has its own transport and bypasses private_request.
+            self.login_request_step="device"
+            return super().private_graphql_www_request(*args,**kwargs)
         # The pinned wrapper retries timeouts and even failed POSTs after challenges.
         # Bypass that wrapper, retaining its authorization and low-level encoding.
         def private_request(self, endpoint, data=None, params=None, login=False, with_signature=True, headers=None, extra_sig=None, domain=None):
+            self.login_request_step = "device" if endpoint.startswith(("graphql", "attestation/")) else "authentication" if endpoint.startswith(("bloks/", "accounts/login/", "accounts/two_factor_login/")) else "feed" if endpoint.startswith("feed/") else "account" if endpoint.startswith("accounts/current_user/") else "other"
             headers = dict(headers or {})
             if self.authorization: headers.setdefault("Authorization",self.authorization)
             self._send_private_request(endpoint,data=data,params=params,login=login,with_signature=with_signature,headers=headers,extra_sig=extra_sig,domain=domain)
@@ -141,8 +156,10 @@ def main():
             if kind in {"login","code"}:
                 if kind=="login": credentials.update(frame["credentials"]); attempt=frame["attemptId"]
                 if frame["attemptId"]!=attempt: raise SafeError("not-found")
+                phase="authentication"
                 try:
                     adapter.client.login(credentials["username"],credentials["password"],verification_code=frame.get("code",""))
+                    phase="account-validation"
                     account=identity(adapter.client.account_info())
                     if expected_id and account["id"]!=expected_id: raise SafeError("identity-mismatch")
                     expected_id=account["id"]
@@ -154,7 +171,7 @@ def main():
                     if code=="invalid-code": state="needs-code"
                     elif code in {"needs-code","needs-verification"}: state=code
                     else: state="failed"
-                    emit({"kind":"event","attemptId":attempt,"state":state,"error":code})
+                    emit({"kind":"event","attemptId":attempt,"state":state,"error":code,"diagnostic":login_diagnostic(error,adapter.client,phase)})
                     if state!="needs-code": credentials.clear(); adapter.client.password=None
                 return
             if kind=="tool":

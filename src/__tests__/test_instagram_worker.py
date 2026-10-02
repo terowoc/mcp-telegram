@@ -48,6 +48,16 @@ class Tests(unittest.TestCase):
         BadPassword=type("BadPassword",(Exception,),{})
         self.assertEqual(module.error_code(BadPassword("secret-password")),"login-failed")
         self.assertEqual(module.error_code(TimeoutError("sessionid=private")),"worker-unavailable")
+    def test_login_diagnostics_only_include_fixed_categories_and_status(self):
+        from instagrapi.exceptions import PleaseWaitFewMinutes
+        error=PleaseWaitFewMinutes("secret-password sessionid=private", response=SimpleNamespace(status_code=429))
+        client=SimpleNamespace(login_request_step="device")
+        self.assertEqual(module.login_diagnostic(error,client,"authentication"),
+            {"phase":"authentication","reason":"please-wait","step":"device","httpStatus":429})
+        Unknown=type("SecretPasswordException",(Exception,),{})
+        result=module.login_diagnostic(Unknown("secret"),SimpleNamespace(login_request_step="sessionid=private"),"account-validation")
+        self.assertEqual(result,{"phase":"account-validation","reason":"other","step":"other"})
+        self.assertNotIn("secret",str(result))
     def test_pinned_caa_two_factor_is_actionable_without_network(self):
         from instagrapi.exceptions import TwoFactorRequired
         c=module.make_client()
@@ -69,5 +79,13 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ClientRequestTimeout): c.private_request("direct_v2/threads/broadcast/text/",data={"text":"test"})
         self.assertEqual(len(calls),1)
         self.assertEqual(c.session_retry_total,0)
+    def test_separate_graphql_preflight_transport_is_classified_without_network(self):
+        from instagrapi.exceptions import ClientRequestTimeout
+        c=module.make_client(); c.request_timeout=0
+        def fail(*args,**kwargs): raise ClientRequestTimeout("secret")
+        c.private.post=fail
+        with self.assertRaises(ClientRequestTimeout) as caught:
+            c.private_graphql_www_request("IGUSDIDRegistrationMutation",{})
+        self.assertEqual(module.login_diagnostic(caught.exception,c,"authentication")["step"],"device")
 
 if __name__ == "__main__": unittest.main()
