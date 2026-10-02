@@ -1,12 +1,13 @@
-import { ApiError, type Attempt, type Cabinet, type Client, request } from "./api.js";
+import { ApiError, type Attempt, type Cabinet, type Client, type InstagramAttempt, request } from "./api.js";
 import { retireTelegramClient } from "./retire-client.js";
 
-type Page = "mcp" | "telegram" | "access" | "clients" | "account";
+type Page = "mcp" | "telegram" | "instagram" | "access" | "clients" | "account";
 type AuthMode = "register" | "login" | "recover";
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const nav: [Page, string, string][] = [
   ["mcp", "MCP", "◇"],
   ["telegram", "Telegram", "➤"],
+  ["instagram", "Instagram", "◎"],
   ["access", "Права доступа", "◈"],
   ["clients", "Подключённые клиенты", "▣"],
   ["account", "Аккаунт", "◎"],
@@ -31,6 +32,10 @@ const errors: Record<string, string> = {
 };
 let cabinet: Cabinet | undefined;
 let selectedTelegramAccount: string | undefined;
+let selectedInstagramAccount:string|undefined;
+let instagramAttempt:InstagramAttempt|undefined;
+let instagramTimer:number|undefined;
+const instagramErrors:Record<string,string>={"needs-verification":"Откройте официальное приложение Instagram, подтвердите вход и повторите подключение.","invalid-code":"Неверный код. Проверьте код и повторите попытку.","needs-login":"Сессия Instagram истекла. Подключите аккаунт снова.","login-failed":"Не удалось войти в Instagram. Проверьте данные или подтвердите вход в официальном приложении.","reauthentication-required":"Войдите в кабинет снова, затем повторите подключение Instagram.","account-already-added":"Этот Instagram уже добавлен в ваш кабинет.","identity-mismatch":"Подключите тот же аккаунт Instagram или создайте новый слот.","account-capacity":"Можно добавить до пяти Instagram-аккаунтов.","worker-unavailable":"Instagram сейчас недоступен. Обновите статус и повторите попытку."};
 let clients: Client[] = [];
 let clientsState: "idle" | "loading" | "ready" | "error" = "idle";
 let renderedContext = "";
@@ -97,7 +102,7 @@ function field(label: string, name: string, type = "text", extra = "", id = name
   return `<div class="field"><label for="field-${id}">${label}</label><div class="inputWrap"><input id="field-${id}" name="${name}" type="${type === "password" && showPassword ? "text" : type}" required ${extra}>${type === "password" ? `<button class="passwordToggle" type="button" data-action="toggle-password" aria-label="${showPassword ? "Скрыть пароль" : "Показать пароль"}" aria-pressed="${showPassword}">${showPassword ? "Скрыть" : "Показать"}</button>` : ""}</div></div>`;
 }
 function render(): void {
-  const context = `${epoch}:${cabinet?.user.id ?? "anonymous"}:${cabinet?.policy.version ?? 0}:${cabinet?.telegramAccountId ?? ""}:${page}:${authMode}`;
+  const context = `${epoch}:${cabinet?.user.id ?? "anonymous"}:${cabinet?.policy.version ?? 0}:${cabinet?.telegramAccountId ?? ""}:${selectedInstagramAccount??""}:${page}:${authMode}`;
   const scrollTop = context === renderedContext ? app.querySelector<HTMLElement>(".canvas")?.scrollTop : undefined;
   const documentScrollTop = context === renderedContext ? document.scrollingElement?.scrollTop : 0;
   const forms = [...app.querySelectorAll<HTMLFormElement>("form")];
@@ -107,7 +112,7 @@ function render(): void {
           [...form.elements]
             .filter(
               (field): field is HTMLInputElement | HTMLTextAreaElement =>
-                "value" in field && "name" in field && (field as HTMLInputElement).type !== "hidden",
+                "value" in field && "name" in field && (field as HTMLInputElement).type !== "hidden" && !["instagramPassword","instagramCode"].includes((field as HTMLInputElement).name),
             )
             .map((field) => ({
               form: form.id,
@@ -201,8 +206,41 @@ function themeButton(): string {
     "themeButton secondary",
   );
 }
+function hasConnection():boolean {return !!cabinet?.telegram.sessionPresent || !!cabinet?.instagram?.accounts.some(c=>c.instagram.sessionPresent);}
+function clearInstagramAttempt():void {clearTimeout(instagramTimer);instagramTimer=undefined;instagramAttempt=undefined;}
+function instagramPath(suffix=""):string {
+  if(!selectedInstagramAccount)throw new Error("Выберите Instagram-аккаунт.");
+  return `/instagram/accounts/${encodeURIComponent(selectedInstagramAccount)}${suffix}`;
+}
+function renderInstagram():string {
+  const accounts=cabinet?.instagram?.accounts??[];
+  if(!cabinet?.instagram?.enabled)return "";
+  const selected=accounts.find(c=>c.id===selectedInstagramAccount);
+  const cards=`<section class="card instagramCard"><div class="cardHeader"><h2>Instagram-аккаунты</h2><span class="tag">${accounts.length} / 5</span></div><p class="muted">Личные сообщения Instagram через MCP. Для отправки включите разрешение в настройках аккаунта ниже.</p><div class="accountChoices">${accounts.map(c=>button(`${escapeHtml(c.label)} · ${c.removalPending?"Повторить удаление":c.instagram.sessionPresent?"Подключён":"Не подключён"}`,`${c.removalPending?"ig-remove:":"ig-select:"}${escapeHtml(c.id)}`,c.id===selectedInstagramAccount?"primary":"secondary")).join("")}</div>${accounts.length<5?`<form id="addInstagramAccountForm">${field("Название Instagram-аккаунта","instagramLabel","text",'maxlength="80" placeholder="Личный"')}<button class="button secondary" ${isBusy?"disabled":""}>Добавить аккаунт</button></form>`:""}<p class="fieldHint">Изменение аккаунтов и прав отзывает OAuth-доступы. Затем подключите AI-клиенты заново.</p></section>`;
+  if(!selected)return cards;
+  let login="";
+  if(selected.instagram.sessionPresent)login=`<div class="sessionInfo"><span class="statusDot online"></span><strong>Instagram подключён</strong></div><p class="muted">${escapeHtml(selected.instagram.account?.username?"@"+selected.instagram.account.username:"")}</p>${selected.instagram.code?`<p class="notice error">${escapeHtml(instagramErrors[selected.instagram.code]??errors[selected.instagram.code]??"Проверьте подключение Instagram.")}</p>`:""}<div class="actions">${button("Перейти к MCP","open-mcp")}${button("Отключить Instagram","ig-disconnect","danger")}</div>`;
+  else if(instagramAttempt&&["starting","needs-code"].includes(instagramAttempt.state))login=instagramAttempt.state==="needs-code"?`<p class="muted">Введите код подтверждения Instagram.</p>${instagramAttempt.code?`<p class="notice error">${escapeHtml(instagramErrors[instagramAttempt.code]??"Проверьте код Instagram.")}</p>`:""}<form id="instagramCodeForm">${field("Код Instagram","instagramCode","text",'autocomplete="one-time-code" maxlength="32"')}<button class="button primary" ${isBusy?"disabled":""}>Подтвердить код</button></form>${button("Отменить","ig-cancel","secondary")}`:`<p role="status">Подключаем Instagram…</p>${button("Отменить","ig-cancel","secondary")}`;
+  else login=`${instagramAttempt?`<p class="notice error">${escapeHtml(instagramErrors[instagramAttempt.code??""]??(instagramAttempt.state==="expired"?"Время подключения истекло.":"Подключение не завершено. Повторите попытку."))}</p>`:""}<p class="muted">Введите данные Instagram. Пароль и код используются только для входа и не сохраняются. Вход в кабинет и вход в Instagram — разные подключения.</p><form id="instagramLoginForm">${field("Имя пользователя Instagram","username","text",'autocomplete="username" maxlength="64"')}${field("Пароль Instagram","instagramPassword","password",'autocomplete="current-password" maxlength="1024"')}<button class="button primary" ${isBusy?"disabled":""}>Подключить Instagram</button></form>`;
+  return cards+`<section class="card instagramCard"><h2>${escapeHtml(selected.label)}</h2><div class="accountDetail"><span class="muted">ID для AI-клиентов</span><code>${escapeHtml(selected.id)}</code></div>${login}<p class="fieldHint">Если Instagram требует дополнительную проверку, подтвердите её в официальном приложении и повторите вход здесь. После отключения сервер удаляет локальную сессию; активные устройства можно отозвать в настройках Instagram.</p></section><section class="card"><h2>Права этого Instagram-аккаунта</h2><form id="instagramPolicyForm"><label class="choice"><input type="radio" name="instagramProfile" value="read" ${selected.policy.profile==="read"?"checked":""}><span>Только чтение</span></label><label class="choice"><input type="radio" name="instagramProfile" value="full" ${selected.policy.profile==="full"?"checked":""}><span>Чтение и отправка сообщений</span></label><label class="field"><span>Разрешённые ID чатов</span><textarea name="instagramThreadIds" rows="3">${escapeHtml(selected.policy.threadIds.join(", "))}</textarea></label><p class="fieldHint">До 100 числовых ID. Пустое поле разрешает все чаты этого аккаунта.</p><button class="button primary" ${isBusy?"disabled":""}>Сохранить права</button></form></section><section class="card"><form id="renameInstagramAccountForm">${field("Название","instagramLabel","text",`maxlength="80" value="${escapeHtml(selected.label)}"`)}<button class="button secondary" ${isBusy?"disabled":""}>Сохранить название</button></form>${button("Удалить этот Instagram-аккаунт",`ig-remove:${escapeHtml(selected.id)}`,"danger")}</section>`;
+}
+async function pollInstagram(id:string,account:string,currentEpoch:number):Promise<void>{
+  if(!cabinet||instagramAttempt?.id!==id||selectedInstagramAccount!==account||epoch!==currentEpoch)return;
+  if(isBusy||document.hidden){instagramTimer=window.setTimeout(()=>void pollInstagram(id,account,currentEpoch),1500);return;}
+  try{
+    const value=await accountRequest<InstagramAttempt>(`/instagram/accounts/${encodeURIComponent(account)}/login/${encodeURIComponent(id)}`);
+    if(epoch!==currentEpoch||selectedInstagramAccount!==account||instagramAttempt?.id!==id)return;
+    const changed=value.state!==instagramAttempt.state||value.code!==instagramAttempt.code;instagramAttempt=value;
+    if(value.state==="connected"){
+      clearInstagramAttempt();await refresh();if(epoch!==currentEpoch)return;selectPage("mcp");message="Instagram подключён. Подключите AI-клиенты заново, чтобы подтвердить доступ.";render();return;
+    }
+    if(changed)render();
+    if(["starting","needs-code"].includes(value.state))instagramTimer=window.setTimeout(()=>void pollInstagram(id,account,currentEpoch),1500);
+  }catch(error){if(epoch!==currentEpoch)return;showError(error);render();instagramTimer=window.setTimeout(()=>void pollInstagram(id,account,currentEpoch),3000);}
+}
+function connectedService():string {return cabinet?.telegram.sessionPresent ? "Telegram" : "Instagram";}
 function renderView(): void {
-  const active = cabinet?.telegram.sessionPresent;
+  const active = hasConnection();
   const notice = message
     ? `<div class="notice ${isError ? "error" : ""} ${floatingNotice ? "toast" : ""}" role="${isError ? "alert" : "status"}"><span>${escapeHtml(message)}</span>${floatingNotice ? button("Закрыть", "dismiss-notice", "link") : ""}</div>`
     : "";
@@ -219,12 +257,13 @@ function renderView(): void {
     return;
   }
   const title = nav.find(([key]) => key === page)![1];
-  app.innerHTML = `<a class="skipLink" href="#main-content">Перейти к содержимому</a><div class="workspace"><aside class="sidebar"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span></div><div class="userCard"><div class="avatar">${escapeHtml(cabinet.user.login[0]?.toUpperCase() || "T")}</div><div class="userInfo"><strong>${escapeHtml(cabinet.user.login)}</strong><span>${active ? "Telegram подключён" : "Подключите Telegram"}</span></div><span class="statusDot ${active ? "online" : ""}"></span></div><nav class="navigation" aria-label="Кабинет">${nav.map(([key, label, icon]) => `<button class="navItem ${page === key ? "selected" : ""}" data-page="${key}" aria-label="${label}" ${isBusy ? "disabled" : ""} ${page === key ? 'aria-current="page"' : ""}><span class="navIcon" aria-hidden="true">${icon}</span><span class="navLabel" data-short="${key === "access" ? "Права" : key === "clients" ? "Клиенты" : label}">${label}</span>${key === "telegram" ? `<span class="navDot ${active ? "online" : ""}"></span>` : ""}</button>`).join("")}</nav><div class="sidebarFoot"><div class="freePlan"><span class="planIcon">✦</span><div><strong>Бесплатный доступ</strong><span>Ваш Telegram. Ваши разрешения.</span></div></div>${button("Выйти из аккаунта", "logout", "link")}</div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="topTitle"><span class="topIcon" aria-hidden="true">${nav.find(([key]) => key === page)![2]}</span><div><h1>${title}</h1><p>${page === "mcp" ? "Подключение Telegram к вашим AI-клиентам" : "Telegram MCP"}</p></div></div><div class="topActions">${themeButton()}<span class="connectionPill ${active ? "connected" : ""}">${active ? "● Подключено" : "○ Не подключено"}</span></div></header><div class="canvas"><div class="content" aria-busy="${isBusy}"><div class="steps" aria-label="Этапы подключения"><span class="done"><b>✓</b> Аккаунт</span><i></i><span class="${active ? "done" : "current"}"><b>${active ? "✓" : "2"}</b> Telegram</span><i></i><span class="${active ? "current" : ""}"><b>3</b> MCP</span></div>${notice}${recoveryCodes.length ? renderRecovery() : renderConnections() + renderPage()}<p class="canvasFoot">Telegram MCP · Бесплатный сервис · Отдельная сессия для каждого аккаунта</p></div></div></main></div>`;
+  app.innerHTML = `<a class="skipLink" href="#main-content">Перейти к содержимому</a><div class="workspace"><aside class="sidebar"><div class="brand"><img class="logo" src="/assets/logo.svg" alt=""><span>Telegram MCP</span></div><div class="userCard"><div class="avatar">${escapeHtml(cabinet.user.login[0]?.toUpperCase() || "T")}</div><div class="userInfo"><strong>${escapeHtml(cabinet.user.login)}</strong><span>${active ? connectedService()+" подключён" : "Подключите аккаунт"}</span></div><span class="statusDot ${active ? "online" : ""}"></span></div><nav class="navigation" aria-label="Кабинет">${nav.filter(([key])=>key!=="instagram"||cabinet?.instagram?.enabled).map(([key, label, icon]) => `<button class="navItem ${page === key ? "selected" : ""}" data-page="${key}" aria-label="${label}" ${isBusy ? "disabled" : ""} ${page === key ? 'aria-current="page"' : ""}><span class="navIcon" aria-hidden="true">${icon}</span><span class="navLabel" data-short="${key === "access" ? "Права" : key === "clients" ? "Клиенты" : label}">${label}</span>${key === "telegram" ? `<span class="navDot ${active ? "online" : ""}"></span>` : ""}</button>`).join("")}</nav><div class="sidebarFoot"><div class="freePlan"><span class="planIcon">✦</span><div><strong>Бесплатный доступ</strong><span>Ваш Telegram. Ваши разрешения.</span></div></div>${button("Выйти из аккаунта", "logout", "link")}</div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="topTitle"><span class="topIcon" aria-hidden="true">${nav.find(([key]) => key === page)![2]}</span><div><h1>${title}</h1><p>${page === "mcp" ? "Подключение аккаунтов к вашим AI-клиентам" : "Telegram MCP"}</p></div></div><div class="topActions">${themeButton()}<span class="connectionPill ${active ? "connected" : ""}">${active ? "● Подключено" : "○ Не подключено"}</span></div></header><div class="canvas"><div class="content" aria-busy="${isBusy}"><div class="steps" aria-label="Этапы подключения"><span class="done"><b>✓</b> Аккаунт</span><i></i><span class="${active ? "done" : "current"}"><b>${active ? "✓" : "2"}</b> Telegram</span><i></i><span class="${active ? "current" : ""}"><b>3</b> MCP</span></div>${notice}${recoveryCodes.length ? renderRecovery() : renderConnections() + renderPage()}<p class="canvasFoot">Telegram MCP · Бесплатный сервис · Отдельная сессия для каждого аккаунта</p></div></div></main></div>`;
 }
 function renderRecovery(): string {
   return `<section class="card recoveryCard"><span class="cardIcon">◈</span><h2>Сохраните коды восстановления</h2><p class="muted">Каждый код можно использовать один раз, чтобы восстановить пароль. Сохраните их в надёжном месте: после закрытия они больше не отображаются.</p><pre class="code recoveryCodes">${escapeHtml(recoveryCodes.join("\n"))}</pre><div class="actions">${button("Скопировать коды", "copy-recovery", "secondary")}${button("Скачать .txt", "download-recovery", "secondary")}${button("Я сохранил коды", "saved-recovery")}</div></section>`;
 }
 function renderPage(): string {
+  if(page==="instagram")return renderInstagram();
   if (page === "telegram") return renderTelegram();
   if (page === "access") return renderAccess();
   if (page === "clients") return renderClients();
@@ -232,11 +271,12 @@ function renderPage(): string {
   return renderMcp();
 }
 function renderMcp(): string {
-  if (!cabinet!.telegram.sessionPresent)
-    return `<section class="hero"><div class="heroIcon">➤</div><span class="eyebrow">СЛЕДУЮЩИЙ ШАГ</span><h2>Подключите свой Telegram</h2><p>Один QR-код — и ваши AI-клиенты смогут работать с Telegram через MCP. Разрешения всегда под вашим контролем.</p>${button("Подключить Telegram", "open-telegram")}<div class="heroNotes"><span>◈ ${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</span><span>◇ OAuth для AI-клиентов</span></div></section><div class="infoGrid"><section class="card"><h3>Отдельные сессии</h3><p class="muted">Telegram подключается на сервере. Кабинет управляет MCP и не открывает отдельный клиент чатов.</p></section><section class="card"><h3>Ваши данные — ваш доступ</h3><p class="muted">Вы выбираете права и можете отключить любой AI-клиент в кабинете.</p></section></div>`;
+  const instagramAccess = cabinet?.instagram?.accounts.filter(c=>c.instagram.sessionPresent).map(c=>`<p><strong>${escapeHtml(c.label)} · Instagram</strong>: ${c.policy.profile==="read"?"Только чтение":"Чтение и отправка"}; ${c.policy.threadIds.length?"выбранные чаты ("+c.policy.threadIds.length+")":"все чаты"}.</p>`).join("")??"";
+  if (!hasConnection())
+    return `<section class="hero"><div class="heroIcon">➤</div><span class="eyebrow">СЛЕДУЮЩИЙ ШАГ</span><h2>Подключите свой Telegram</h2><p>Один QR-код — и ваши AI-клиенты смогут работать с Telegram через MCP. Разрешения всегда под вашим контролем.</p>${button("Подключить Telegram", "open-telegram")}${cabinet?.instagram?.enabled?button("Подключить Instagram","open-instagram","secondary"):""}<div class="heroNotes"><span>◈ ${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</span><span>◇ OAuth для AI-клиентов</span></div></section><div class="infoGrid"><section class="card"><h3>Отдельные сессии</h3><p class="muted">Telegram подключается на сервере. Кабинет управляет MCP и не открывает отдельный клиент чатов.</p></section><section class="card"><h3>Ваши данные — ваш доступ</h3><p class="muted">Вы выбираете права и можете отключить любой AI-клиент в кабинете.</p></section></div>`;
   const url = cabinet!.mcpUrl;
   const config = JSON.stringify({ mcpServers: { telegram: { type: "http", url } } }, undefined, 2);
-  return `<section class="welcomeBubble"><span class="welcomeCheck" aria-hidden="true">✓</span><div><h2>Telegram готов к работе с AI</h2><p>Добавьте адрес MCP в своём клиенте и подтвердите доступ через OAuth.</p></div></section><section class="card"><div class="cardHeader"><div><span class="eyebrow">MCP ENDPOINT</span><h2>Ваш адрес подключения</h2></div><span class="tag">Streamable HTTP</span></div><div class="endpoint"><code>${escapeHtml(url)}</code>${button("Скопировать", "copy-url", "secondary")}</div><div class="metadata"><span>Авторизация <strong>OAuth 2.1 + PKCE</strong></span><span>Права <strong>${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</strong></span><span>Чаты <strong>${cabinet!.policy.chatIds.length ? cabinet!.policy.chatIds.length + " выбрано" : "Все ваши чаты"}</strong></span></div></section><section class="card"><h2>Как подключить AI-клиент</h2><ol class="connectSteps"><li><strong>Откройте настройки MCP</strong><p>В ChatGPT, Claude или другом клиенте выберите добавление удалённого MCP-сервера.</p></li><li><strong>Вставьте адрес подключения</strong><p>Используйте URL выше и OAuth, если клиент предлагает способ авторизации.</p></li><li><strong>Подтвердите разрешения</strong><p>Войдите в этот кабинет и разрешите клиенту доступ. Повторно подключать Telegram не нужно.</p></li></ol><p class="fieldHint">Клиент должен поддерживать удалённый MCP по HTTP и OAuth. Его доступ появится в разделе «Подключённые клиенты».</p></section><details class="configDetails"><summary>Конфигурация для MCP-клиентов <span>JSON · TOML</span></summary><div class="infoGrid"><section class="card"><div class="cardHeader"><h3>JSON конфигурация</h3>${button("Копировать", "copy-json", "link")}</div><pre class="code">${escapeHtml(config)}</pre><p class="fieldHint">Для клиентов с форматом mcpServers. Авторизацию выполните через OAuth в клиенте.</p></section><section class="card"><div class="cardHeader"><h3>Codex · TOML</h3>${button("Копировать", "copy-toml", "link")}</div><pre class="code">${escapeHtml(`[mcp_servers.telegram]\nurl = "${url}"`)}</pre><p class="fieldHint">Добавьте сервер в конфигурацию MCP и выполните вход через OAuth.</p></section></div></details>${continuation ? `<section class="card oauthCard"><h3>Продолжить подключение клиента</h3><p class="muted">Telegram подключён. Вернитесь к подтверждению доступа для AI-клиента.</p>${button("Продолжить", "resume-oauth")}</section>` : ""}`;
+  return `${instagramAccess?`<section class="card"><h2>Доступ к Instagram</h2>${instagramAccess}</section>`:""}<section class="welcomeBubble"><span class="welcomeCheck" aria-hidden="true">✓</span><div><h2>${cabinet!.telegram.sessionPresent ? "Telegram" : "Instagram"} готов к работе с AI</h2><p>Добавьте адрес MCP в своём клиенте и подтвердите доступ через OAuth.</p></div></section><section class="card"><div class="cardHeader"><div><span class="eyebrow">MCP ENDPOINT</span><h2>Ваш адрес подключения</h2></div><span class="tag">Streamable HTTP</span></div><div class="endpoint"><code>${escapeHtml(url)}</code>${button("Скопировать", "copy-url", "secondary")}</div><div class="metadata"><span>Авторизация <strong>OAuth 2.1 + PKCE</strong></span><span>Права <strong>${cabinet!.policy.profile === "read" ? "Только чтение" : "Чтение и изменение"}</strong></span><span>Чаты <strong>${cabinet!.policy.chatIds.length ? cabinet!.policy.chatIds.length + " выбрано" : "Все ваши чаты"}</strong></span></div></section><section class="card"><h2>Как подключить AI-клиент</h2><ol class="connectSteps"><li><strong>Откройте настройки MCP</strong><p>В ChatGPT, Claude или другом клиенте выберите добавление удалённого MCP-сервера.</p></li><li><strong>Вставьте адрес подключения</strong><p>Используйте URL выше и OAuth, если клиент предлагает способ авторизации.</p></li><li><strong>Подтвердите разрешения</strong><p>Войдите в этот кабинет и разрешите клиенту доступ. Повторно подключать аккаунт не нужно.</p></li></ol><p class="fieldHint">Клиент должен поддерживать удалённый MCP по HTTP и OAuth. Его доступ появится в разделе «Подключённые клиенты».</p></section><details class="configDetails"><summary>Конфигурация для MCP-клиентов <span>JSON · TOML</span></summary><div class="infoGrid"><section class="card"><div class="cardHeader"><h3>JSON конфигурация</h3>${button("Копировать", "copy-json", "link")}</div><pre class="code">${escapeHtml(config)}</pre><p class="fieldHint">Для клиентов с форматом mcpServers. Авторизацию выполните через OAuth в клиенте.</p></section><section class="card"><div class="cardHeader"><h3>Codex · TOML</h3>${button("Копировать", "copy-toml", "link")}</div><pre class="code">${escapeHtml(`[mcp_servers.telegram]\nurl = "${url}"`)}</pre><p class="fieldHint">Добавьте сервер в конфигурацию MCP и выполните вход через OAuth.</p></section></div></details>${continuation ? `<section class="card oauthCard"><h3>Продолжить подключение клиента</h3><p class="muted">Аккаунт подключён. Вернитесь к подтверждению доступа для AI-клиента.</p>${button("Продолжить", "resume-oauth")}</section>` : ""}`;
 }
 function renderTelegram(): string {
   if (cabinet!.telegram.sessionPresent) {
@@ -285,7 +325,7 @@ function showError(error: unknown): void {
   isError = true;
   message =
     error instanceof ApiError
-      ? (errors[error.code] ?? "Не удалось выполнить запрос. Попробуйте снова.")
+      ? (instagramErrors[error.code] ?? errors[error.code] ?? "Не удалось выполнить запрос. Попробуйте снова.")
       : "Не удалось связаться с сервером. Проверьте соединение и попробуйте снова.";
   if (error instanceof ApiError && error.status === 401 && cabinet) {
     clearAttempt();
@@ -339,7 +379,7 @@ async function refresh(): Promise<void> {
   const switchedAccount = cabinet && cabinet.user.id !== value.user.id;
   if (switchedAccount) {
     selectedTelegramAccount = undefined;
-    selectPage(value.telegram.sessionPresent ? "mcp" : "telegram");
+    selectPage(value.telegram.sessionPresent || value.instagram?.accounts.some(c=>c.instagram.sessionPresent) ? "mcp" : "telegram");
     clearAttempt();
     clients = [];
     clientsState = "idle";
@@ -348,6 +388,8 @@ async function refresh(): Promise<void> {
     pendingPage = undefined;
   }
   cabinet = value;
+  if(!value.instagram?.accounts.some(c=>c.id===selectedInstagramAccount)) selectedInstagramAccount=value.instagram?.accounts[0]?.id;
+  if(switchedAccount)clearInstagramAttempt();
   if (switchedAccount) render();
 }
 async function resumeAttempt(): Promise<void> {
@@ -431,6 +473,7 @@ async function copy(value: string): Promise<void> {
 }
 function pageFromHash(): Page | undefined {
   const name = location.hash?.slice(1);
+  if (name === "instagram" && !cabinet?.instagram?.enabled) return undefined;
   return nav.find(([key]) => key === name)?.[0];
 }
 function selectPage(next: Page): void {
@@ -447,7 +490,7 @@ function openPage(next: Page, updateHash = true): void {
 }
 window.addEventListener("hashchange", () => {
   const next = pageFromHash();
-  if (!cabinet || !next) return;
+  if (!cabinet || !next || (next === "instagram" && !cabinet.instagram?.enabled)) return;
   if (isBusy) {
     pendingPage = next === page ? undefined : next;
     return;
@@ -467,7 +510,7 @@ async function dispatchAction(action: string): Promise<void> {
       try {
         await refresh();
         startupFailed = false;
-        selectPage(pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram"));
+        selectPage(pageFromHash() ?? (hasConnection() ? "mcp" : "telegram"));
         await resumeAttempt();
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
@@ -526,8 +569,8 @@ async function dispatchAction(action: string): Promise<void> {
     return;
   }
   if (!cabinet) return;
-  if (action === "open-telegram" || action === "open-mcp") {
-    openPage(action === "open-mcp" ? "mcp" : "telegram");
+  if (action === "open-telegram" || action === "open-mcp" || action === "open-instagram") {
+    openPage(action === "open-mcp" ? "mcp" : action === "open-instagram" ? "instagram" : "telegram");
     return;
   }
   if (action === "copy-url") {
@@ -543,6 +586,24 @@ async function dispatchAction(action: string): Promise<void> {
     return;
   }
   if (action === "disconnect" && !confirm("Отключить Telegram и отозвать доступ всех MCP-клиентов?")) return;
+  if(action.startsWith("ig-")){
+    await run(async()=>{
+      if(action.startsWith("ig-select:")){
+        const id=action.slice("ig-select:".length);if(!cabinet?.instagram?.accounts.some(c=>c.id===id))return;
+        if(instagramAttempt&&["starting","needs-code"].includes(instagramAttempt.state))await accountRequest(instagramPath(`/login/${encodeURIComponent(instagramAttempt.id)}`),"DELETE");
+        clearInstagramAttempt();selectedInstagramAccount=id;render();
+      }else if(action==="ig-cancel"){
+        if(instagramAttempt)await accountRequest(instagramPath(`/login/${encodeURIComponent(instagramAttempt.id)}`),"DELETE");clearInstagramAttempt();await refresh();
+      }else if(action==="ig-disconnect"){
+        if(!confirm("Отключить Instagram и отозвать доступы MCP-клиентов?"))return;
+        await accountRequest(instagramPath("/disconnect"),"POST",{});clearInstagramAttempt();await refresh();message="Instagram отключён. Подключите AI-клиенты заново.";
+      }else if(action.startsWith("ig-remove:")){
+        const id=action.slice("ig-remove:".length);if(!confirm("Удалить Instagram-аккаунт и отозвать доступы MCP-клиентов?"))return;
+        await accountRequest(`/instagram/accounts/${encodeURIComponent(id)}`,"DELETE");clearInstagramAttempt();await refresh();message="Instagram-аккаунт удалён.";
+      }
+      clients=[];clientsState="idle";
+    });return;
+  }
   await run(async () => {
     if (action.startsWith("select-account:")) {
       const id = action.slice("select-account:".length);
@@ -564,6 +625,7 @@ async function dispatchAction(action: string): Promise<void> {
       epoch++;
       clearAttempt();
       selectedTelegramAccount = undefined;
+      selectedInstagramAccount = undefined; clearInstagramAttempt();
       clients = [];
       clientsState = "idle";
       await refresh();
@@ -575,6 +637,7 @@ async function dispatchAction(action: string): Promise<void> {
       clearAttempt();
       cabinet = undefined;
       selectedTelegramAccount = undefined;
+      selectedInstagramAccount = undefined; clearInstagramAttempt();
       clients = [];
       clientsState = "idle";
       recoveryCodes = [];
@@ -646,13 +709,30 @@ app.addEventListener("submit", (event) => {
   const password = value("password");
   const login = value("login");
   const recoveryCode = value("recoveryCode");
+  const instagramPassword=value("instagramPassword"),instagramCode=value("instagramCode");
+  if(form.id==="instagramLoginForm"||form.id==="instagramCodeForm"){
+    for(const control of Array.from(form.elements??[]))if("value" in control&&"name" in control&&["instagramPassword","instagramCode"].includes(String(control.name)))(control as HTMLInputElement).value="";
+    values.delete?.("instagramPassword");values.delete?.("instagramCode");pendingFieldFocus=undefined;
+  }
   const profile = value("profile");
   const chatIds = value("chatIds")
     .split(/[\s,]+/)
     .filter(Boolean);
   if (form.id === "deleteForm" && !confirm("Удалить аккаунт без возможности восстановления?")) return;
   void run(async () => {
-    if (form.id === "authForm") {
+    if(form.id==="instagramLoginForm"&&cabinet){
+      clearInstagramAttempt();instagramAttempt=await accountRequest<InstagramAttempt>(instagramPath("/login"),"POST",{username:value("username"),password:instagramPassword});
+      instagramTimer=window.setTimeout(()=>void pollInstagram(instagramAttempt!.id,selectedInstagramAccount!,epoch),200);
+    }else if(form.id==="instagramCodeForm"&&cabinet&&instagramAttempt){
+      await accountRequest(instagramPath(`/login/${encodeURIComponent(instagramAttempt.id)}/code`),"POST",{code:instagramCode});instagramAttempt={...instagramAttempt,state:"starting",code:undefined};
+      instagramTimer=window.setTimeout(()=>void pollInstagram(instagramAttempt!.id,selectedInstagramAccount!,epoch),200);
+    }else if(form.id==="addInstagramAccountForm"&&cabinet){
+      const result=await accountRequest<{account:{id:string}}>("/instagram/accounts","POST",{label:value("instagramLabel")});clearInstagramAttempt();selectedInstagramAccount=result.account.id;await refresh();message="Instagram-аккаунт добавлен. Введите данные Instagram для подключения.";
+    }else if(form.id==="renameInstagramAccountForm"&&cabinet){
+      await accountRequest(instagramPath(),"PATCH",{label:value("instagramLabel")});await refresh();message="Название Instagram-аккаунта сохранено.";
+    }else if(form.id==="instagramPolicyForm"&&cabinet){
+      await accountRequest(instagramPath("/policy"),"PUT",{profile:value("instagramProfile"),threadIds:[...new Set(value("instagramThreadIds").split(/[\s,]+/).filter(Boolean))]});clearInstagramAttempt();await refresh();message="Права Instagram сохранены. Подключите AI-клиенты заново.";
+    }else if (form.id === "authForm") {
       if (authMode === "recover") {
         const result = await request<{ recoveryCodes: string[] }>("/recover", "POST", {
           login,
@@ -675,7 +755,7 @@ app.addEventListener("submit", (event) => {
       const authenticatedEpoch = epoch;
       try {
         await refresh();
-        selectPage(cabinet!.telegram.sessionPresent ? "mcp" : "telegram");
+        selectPage(hasConnection() ? "mcp" : "telegram");
         if (!recoveryCodes.length) await resumeAttempt();
       } catch (error) {
         if (authenticatedEpoch === epoch) showError(error);
@@ -724,6 +804,7 @@ app.addEventListener("submit", (event) => {
       clearAttempt();
       cabinet = undefined;
       selectedTelegramAccount = undefined;
+      selectedInstagramAccount = undefined; clearInstagramAttempt();
       clients = [];
       clientsState = "idle";
       recoveryCodes = [];
@@ -759,7 +840,7 @@ async function start(): Promise<void> {
   }
   try {
     await refresh();
-    selectPage(pageFromHash() ?? (cabinet!.telegram.sessionPresent ? "mcp" : "telegram"));
+    selectPage(pageFromHash() ?? (hasConnection() ? "mcp" : "telegram"));
     await resumeAttempt();
   } catch (error) {
     if (!(error instanceof ApiError && error.status === 401)) {

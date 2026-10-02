@@ -1,4 +1,5 @@
 export interface Cabinet {
+  instagram?: {enabled:boolean;accounts:InstagramAccount[]};
   user: { id: string; login: string; hasPassword: boolean };
   csrfToken: string;
   policy: { profile: "read" | "full"; chatIds: string[]; version: number };
@@ -20,6 +21,11 @@ export interface Client {
   name?: string;
   version: number;
 }
+export interface InstagramAccount {
+  id:string;label:string;removalPending:boolean;policy:{profile:"read"|"full";threadIds:string[]};
+  instagram:{state:string;busy?:boolean;sessionPresent:boolean;account?:{id:string;username?:string};code?:string;cooldownUntil?:number};
+}
+export interface InstagramAttempt { id:string;state:string;expiresAt:number;code?:string; }
 export interface Attempt {
   id: string;
   state: string;

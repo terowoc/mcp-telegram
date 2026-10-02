@@ -51,3 +51,11 @@ MCP ограничен 120 запросами в минуту на автори�
 В Docker-логе строки `[mcp-tool]` содержат имя инструмента, результат `ok/error`, `totalMs`, `admissionMs`, `queueMs`, `executionMs`, `connectionMs`, а также признаки холодного процесса (`cold`) и подключения (`connectionCold`). Аргументы, тексты сообщений, идентификаторы аккаунтов и токены не записываются. `Server-Timing` у MCP-ответа показывает время обработки сервером и создания каталога. Эти замеры не включают генерацию ответа моделью ChatGPT.
 
 Для воспроизводимого сравнения без Telegram-сессий и сети: `node --import tsx scripts/benchmark-mcp.mts`. Переменная `MCP_BENCH_SOURCE` позволяет указать прежний checkout. Сценарий использует искусственные 20 мс на Telegram-запрос: измеряет поиск восьми групп, получение 100 сообщений и inbox восьми чатов. Результаты показывают изменения локального алгоритма, а не пропускную способность VPS или обещанное время ответа ChatGPT. Нагрузочные испытания общего VPS не выполняются автоматически.
+# Optional Instagram integration
+
+The image includes a pinned Python runtime for personal Instagram DMs.
+Set `MCP_INSTAGRAM_ENABLED=1` in the Compose environment to enable it.
+See [Instagram setup and verification](instagram.md) for connection and
+permission controls. Instagram and Telegram share the worker capacity.
+The additive schema-5 migration requires the matching auth/database snapshot
+when rolling back to an older image; image-only rollback is insufficient.
