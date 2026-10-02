@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { InstagramStore, instagramSchema } from "../instagram/store.js";
 import type {
   BrowserSession,
   GrantBinding,
@@ -26,6 +27,7 @@ type UserRow = {
 };
 
 export class SaasStore {
+  readonly instagram: InstagramStore;
   private readonly db: DatabaseSync;
   private readonly maxUsers: number;
 
@@ -38,7 +40,7 @@ export class SaasStore {
     try {
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
       const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
-      if (version.user_version > 4) throw new Error("Unsupported SaaS database version");
+      if (version.user_version > 5) throw new Error("Unsupported SaaS database version");
       this.db.exec("PRAGMA foreign_keys=OFF");
       this.db.exec("BEGIN IMMEDIATE");
       this.db.exec(`
@@ -86,7 +88,18 @@ export class SaasStore {
       CREATE INDEX IF NOT EXISTS telegram_connection_owner ON telegram_connections(owner_id);
       CREATE TABLE IF NOT EXISTS pending_account_deletions (
         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE);
-      PRAGMA user_version=4; COMMIT; PRAGMA foreign_keys=ON;`);
+      ${instagramSchema}
+      PRAGMA user_version=5; COMMIT; PRAGMA foreign_keys=ON;`);
+      this.instagram = new InstagramStore(
+        this.db,
+        (id) => {
+          const user = this.findUser(id);
+          return !!user && !user.disabled && this.connectionOwner(id) === id;
+        },
+        (owner) => {
+          this.revokeUserGrants(owner);
+        },
+      );
     } catch (error) {
       this.db.close();
       throw error;

@@ -7,13 +7,19 @@ COPY tsconfig.json ./
 COPY src/ src/
 COPY apps/dashboard/ apps/dashboard/
 COPY scripts/build-web.mjs scripts/build-web.mjs
+COPY scripts/copy-instagram-worker.mjs scripts/copy-instagram-worker.mjs
 RUN node scripts/build-web.mjs production
 RUN npx tsc
+RUN node scripts/copy-instagram-worker.mjs
 RUN npm prune --omit=dev
 
 FROM node:24.15-bookworm-slim
-ENV NODE_ENV=production MCP_WEB_ROOT=/app/web
+ENV NODE_ENV=production MCP_WEB_ROOT=/app/web MCP_INSTAGRAM_PYTHON=/opt/instagram/bin/python PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
+COPY packaging/instagram/requirements.txt /tmp/instagram-requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/instagram && /opt/instagram/bin/pip install --no-cache-dir --require-hashes -r /tmp/instagram-requirements.txt \
+    && rm /tmp/instagram-requirements.txt
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/apps/dashboard/dist ./web
