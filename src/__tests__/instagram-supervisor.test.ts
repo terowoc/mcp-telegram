@@ -140,3 +140,19 @@ test("Instagram shares process capacity with Telegram reservations and releases 
     await s.close();
   }
 });
+
+test("login rate limits persist a cooldown before another attempt can start", async () => {
+  const s = await setup();
+  try {
+    const a = await s.supervisor.startLogin(s.owner.id, s.c.id, { username: "rate", password: "private" });
+    for (let i = 0; i < 50 && s.supervisor.attempt(s.owner.id, s.c.id, a.id)?.state !== "failed"; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.ok(s.store.instagram.get(s.owner.id, s.c.id)!.cooldownUntil > Date.now() + 50000);
+    await assert.rejects(
+      s.supervisor.startLogin(s.owner.id, s.c.id, { username: "alice", password: "private" }),
+      /rate-limited/,
+    );
+  } finally {
+    await s.close();
+  }
+});

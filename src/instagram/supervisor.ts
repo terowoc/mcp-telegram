@@ -321,8 +321,10 @@ export class InstagramSupervisor {
         return;
       if (f.state === "connected" && !a.saved) throw new Error("Unverified login");
       a.view.state = f.state;
-      if (f.error) a.view.code = safeCode(f.error);
-      else delete a.view.code;
+      if (f.error) {
+        a.view.code = safeCode(f.error);
+        if (a.view.code === "rate-limited") this.options.store.cooldown(s.connection.id, Date.now() + 60000);
+      } else delete a.view.code;
       if (f.state !== "needs-code") {
         clearTimeout(a.timer);
         if (f.state !== "connected") void this.stop(s.connection.id);

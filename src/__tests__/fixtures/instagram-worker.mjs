@@ -23,7 +23,8 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (f.kind === "shutdown") process.exit(0);
   if (f.kind === "login") {
     username = f.credentials.username;
-    if (username === "code") emit({ kind: "event", attemptId: f.attemptId, state: "needs-code" });
+    if (username === "rate") emit({ kind: "event", attemptId: f.attemptId, state: "failed", error: "rate-limited" });
+    else if (username === "code") emit({ kind: "event", attemptId: f.attemptId, state: "needs-code" });
     else connected(f.attemptId);
   }
   if (f.kind === "code") connected(f.attemptId);

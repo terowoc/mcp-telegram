@@ -69,15 +69,13 @@ export function createSaasIdentity(
             connected: !!store.getEncryptedSession(connection.id),
           })),
           instagram: instagram
-            ? store.instagram
-                .list(user.id)
-                .map((c) => ({
-                  id: c.id,
-                  label: c.label,
-                  policy: c.policy,
-                  account: c.account,
-                  connected: !!c.envelope,
-                }))
+            ? store.instagram.list(user.id).map((c) => ({
+                id: c.id,
+                label: c.label,
+                policy: c.policy,
+                account: c.account,
+                connected: !!c.envelope,
+              }))
             : [],
         })
       : "inactive";
