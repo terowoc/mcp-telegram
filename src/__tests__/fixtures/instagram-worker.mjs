@@ -18,7 +18,10 @@ for await (const line of createInterface({ input: process.stdin })) {
   const f = JSON.parse(line);
   if (f.kind === "init") {
     generation = f.generation;
-    emit({ kind: "ready" });
+    emit({
+      kind: "ready",
+      ...(f.session?.authorization_data?.sessionid === "rate-restore" ? { error: "rate-limited" } : {}),
+    });
   }
   if (f.kind === "shutdown") process.exit(0);
   if (f.kind === "login") {
@@ -29,6 +32,10 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (f.kind === "code") connected(f.attemptId);
   if (f.kind === "tool") {
+    if (f.args.threadId === "905") {
+      emit({ kind: "result", id: f.id, error: "needs-verification" });
+      continue;
+    }
     if (f.args.threadId === "900") {
       process.stdout.write("not-json\n");
       continue;

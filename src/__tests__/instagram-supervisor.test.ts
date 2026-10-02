@@ -10,15 +10,23 @@ import { InstagramVault } from "../instagram/vault.js";
 import { createSaasStore } from "../saas/store.js";
 import { WorkerBudget } from "../saas/worker-budget.js";
 
-async function setup(overrides: { toolMs?: number; loginMs?: number; budget?: WorkerBudget } = {}) {
+async function setup(
+  overrides: {
+    toolMs?: number;
+    loginMs?: number;
+    budget?: WorkerBudget;
+    spawn?: typeof import("node:child_process").spawn;
+  } = {},
+) {
   const store = createSaasStore(":memory:"),
     root = await mkdtemp(join(tmpdir(), "ig-worker-"));
   const owner = store.register("alice", "hash", []),
     other = store.register("bobby", "hash", []);
   const c = store.instagram.create(owner.id, "Personal");
+  const vault = new InstagramVault(randomBytes(32));
   const supervisor = new InstagramSupervisor({
     store: store.instagram,
-    vault: new InstagramVault(randomBytes(32)),
+    vault,
     budget: new WorkerBudget(2),
     python: process.execPath,
     workerPath: fileURLToPath(new URL("./fixtures/instagram-worker.mjs", import.meta.url)),
@@ -29,6 +37,7 @@ async function setup(overrides: { toolMs?: number; loginMs?: number; budget?: Wo
   });
   return {
     store,
+    vault,
     root,
     owner,
     other,
@@ -152,6 +161,75 @@ test("login rate limits persist a cooldown before another attempt can start", as
       s.supervisor.startLogin(s.owner.id, s.c.id, { username: "alice", password: "private" }),
       /rate-limited/,
     );
+  } finally {
+    await s.close();
+  }
+});
+
+async function connect(s: Awaited<ReturnType<typeof setup>>) {
+  const a = await s.supervisor.startLogin(s.owner.id, s.c.id, { username: "alice", password: "private" });
+  for (let i = 0; i < 50 && s.supervisor.attempt(s.owner.id, s.c.id, a.id)?.state !== "connected"; i++)
+    await new Promise((r) => setTimeout(r, 10));
+  assert.equal(s.supervisor.attempt(s.owner.id, s.c.id, a.id)?.state, "connected");
+}
+test("challenged sessions block subsequent automation and drain queued tools", async () => {
+  const s = await setup();
+  try {
+    await connect(s);
+    const results = await Promise.allSettled([
+      s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "905" }),
+      s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "12" }),
+    ]);
+    assert.equal(results[0].status, "rejected");
+    assert.equal(results[1].status, "rejected");
+    assert.equal(s.supervisor.status(s.owner.id, s.c.id).state, "stopped");
+    assert.equal(s.store.instagram.get(s.owner.id, s.c.id)?.envelope, undefined);
+    assert.notEqual(s.store.instagram.get(s.owner.id, s.c.id)?.generation, s.c.generation);
+    await assert.rejects(
+      s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "12" }),
+      /needs-verification/,
+    );
+    await connect(s);
+    await s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "12" });
+  } finally {
+    await s.close();
+  }
+});
+test("persisted cooldown blocks cold session restore before any subprocess is spawned", async () => {
+  const { spawn } = await import("node:child_process");
+  let spawns = 0;
+  const s = await setup({
+    spawn: ((...args: Parameters<typeof spawn>) => {
+      spawns++;
+      return spawn(...args);
+    }) as typeof spawn,
+  });
+  try {
+    await connect(s);
+    await s.supervisor.stop(s.c.id);
+    s.store.instagram.cooldown(s.c.id, Date.now() + 60000);
+    const previous = spawns;
+    await assert.rejects(
+      s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "12" }),
+      /rate-limited/,
+    );
+    assert.equal(spawns, previous);
+  } finally {
+    await s.close();
+  }
+});
+test("rate limits during session restoration persist cooldown", async () => {
+  const s = await setup();
+  try {
+    const state = { uuids: { uuid: "fixture" }, authorization_data: { ds_user_id: "123", sessionid: "rate-restore" } };
+    s.store.instagram.save(s.owner.id, s.c.id, s.c.generation, s.vault.encrypt(s.owner.id, s.c.id, state), {
+      id: "123",
+    });
+    await assert.rejects(
+      s.supervisor.call(s.owner.id, s.c.id, "instagram-read-messages", { threadId: "12" }),
+      /rate-limited/,
+    );
+    assert.ok(s.store.instagram.get(s.owner.id, s.c.id)!.cooldownUntil > Date.now() + 50000);
   } finally {
     await s.close();
   }

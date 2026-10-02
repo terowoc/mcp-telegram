@@ -37,7 +37,9 @@ unofficial private API and does not provide Telegram-style QR login.
 Login requires cabinet authentication within the previous five minutes.
 If prompted to authenticate again, sign back into the cabinet and retry.
 If Instagram asks for a selfie, CAPTCHA, or another unsupported review,
-complete it in the official app and retry here. Do not repeatedly restart
+complete it in the official app and reconnect here. A challenge or expired
+session stops automation and clears the server session; your clients need
+to authorize access again after reconnecting. Do not repeatedly restart
 login. Rate limits impose a cooldown of at least 60 seconds.
 
 Each slot reconnects to its originally verified identity. To switch the

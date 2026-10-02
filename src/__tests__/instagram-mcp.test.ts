@@ -112,3 +112,43 @@ test("new Instagram access invalidates existing grants and stale consent", () =>
     store.close();
   }
 });
+
+test("actual SDK dispatch rejects Instagram selectors on Telegram tools before proxying", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { wireIpcProxies } = await import("../client.js");
+  const { ToolPolicy } = await import("../tool-policy.js");
+  const server = new McpServer({ name: "test", version: "1" });
+  registerHostedTools(server, new ToolPolicy(), true, true, true);
+  let calls = 0;
+  wireIpcProxies(server, {
+    call: async () => {
+      calls++;
+      return { content: [{ type: "text", text: "fixture" }] };
+    },
+  });
+  const client = new Client({ name: "fixture", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    for (const [name, args] of [
+      ["telegram-send-message", { chatId: "me", text: "fixture" }],
+      ["telegram-list-accounts", {}],
+      ["telegram-create-media-upload", { fileName: "fixture.txt", sizeBytes: 1, sha256: "0".repeat(64) }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: { ...args, instagramAccountId: randomUUID() } });
+      assert.equal(result.isError, true, `${name} must reject a mixed selector`);
+    }
+    assert.equal(calls, 0);
+    const valid = await client.callTool({
+      name: "telegram-send-message",
+      arguments: { chatId: "me", text: "fixture" },
+    });
+    assert.equal(valid.isError, undefined);
+    assert.equal(calls, 1);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});

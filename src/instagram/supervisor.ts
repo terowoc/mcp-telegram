@@ -151,11 +151,30 @@ export class InstagramSupervisor {
       this.options.store.get(s.connection.ownerId, s.connection.id)?.generation === s.connection.generation
     );
   }
+  private upstreamAllowed(c: InstagramConnection): void {
+    if (c.cooldownUntil > Date.now()) throw new InstagramError("rate-limited");
+    const failure = this.failures.get(c.id);
+    if (failure && ["needs-login", "needs-verification", "identity-mismatch"].includes(failure))
+      throw new InstagramError(failure);
+  }
+  private failure(s: Slot, code: string): void {
+    this.failures.set(s.connection.id, code);
+    if (code === "rate-limited") this.options.store.cooldown(s.connection.id, Date.now() + 60000);
+    if (["needs-login", "needs-verification", "identity-mismatch"].includes(code)) {
+      // Invalid credentials cannot resume automation after a restart. Recovery
+      // requires an explicit fresh login, and access changes revoke grants.
+      this.options.store.disconnect(s.connection.ownerId, s.connection.id);
+      void this.stop(s.connection.id);
+    }
+  }
   private async acquire(owner: string, id: string): Promise<Slot> {
     const release = await this.admission.acquire();
     try {
       if (this.closing) throw new InstagramError("worker-unavailable");
       const c = this.owned(owner, id);
+      // New login attempts have no saved credentials and may recover a blocked session.
+      if (c.envelope) this.upstreamAllowed(c);
+      else if (c.cooldownUntil > Date.now()) throw new InstagramError("rate-limited");
       let s = this.slots.get(id);
       if (s && (s.stopping || s.connection.generation !== c.generation)) {
         await this.stop(id);
@@ -174,6 +193,9 @@ export class InstagramSupervisor {
           // Admission remains reserved across directory creation and worker startup.
           if (this.closing || this.owned(owner, id).generation !== c.generation)
             throw new InstagramError("worker-unavailable");
+          const latest = this.owned(owner, id);
+          if (latest.envelope) this.upstreamAllowed(latest);
+          else if (latest.cooldownUntil > Date.now()) throw new InstagramError("rate-limited");
           const child = (this.options.spawn ?? spawn)(this.options.python, [this.path()], {
             cwd: root,
             env: this.env(),
@@ -268,7 +290,7 @@ export class InstagramSupervisor {
       if (s.initialized) throw new Error("Unexpected ready");
       clearTimeout(s.startup);
       if (f.error) {
-        this.failures.set(s.connection.id, safeCode(f.error));
+        this.failure(s, safeCode(f.error));
         s.rejectReady(new InstagramError(safeCode(f.error)));
         void this.stop(s.connection.id);
       } else {
@@ -338,8 +360,7 @@ export class InstagramSupervisor {
     p.cleanup();
     if (f.error) {
       const code = safeCode(f.error);
-      if (code === "rate-limited") this.options.store.cooldown(s.connection.id, Date.now() + 60000);
-      this.failures.set(s.connection.id, code);
+      this.failure(s, code);
       p.reject(new InstagramError(code));
     } else p.resolve(f.result);
   }
@@ -426,6 +447,7 @@ export class InstagramSupervisor {
     const initial = this.owned(owner, id);
     new InstagramPolicy(initial.policy).authorize(name, args);
     if (name === "instagram-status") return this.status(owner, id);
+    this.upstreamAllowed(initial);
     if (!initial.envelope) throw new InstagramError("needs-login");
     const signal = options.signal
       ? AbortSignal.any([options.signal, AbortSignal.timeout(this.options.toolMs ?? 45000)])
@@ -443,7 +465,7 @@ export class InstagramSupervisor {
       const c = this.owned(owner, id);
       if (c.generation !== s.connection.generation) throw new InstagramError("worker-unavailable");
       new InstagramPolicy(c.policy).authorize(name, args);
-      if (c.cooldownUntil > Date.now()) throw new InstagramError("rate-limited");
+      this.upstreamAllowed(c);
       if (name === "instagram-send-message") {
         requestId = z.uuid().parse(args.requestId);
         const text = z
