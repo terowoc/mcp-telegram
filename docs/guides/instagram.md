@@ -46,6 +46,20 @@ session stops automation and clears the server session; your clients need
 to authorize access again after reconnecting. Do not repeatedly restart
 login. Rate limits impose a cooldown of at least 60 seconds.
 
+If the cabinet reports that Instagram temporarily restricted login, the request
+reached Instagram and it rejected the account/device/IP context. The cabinet's
+60-second guard is not the duration of Instagram's restriction. Pause attempts,
+check the official app for login approvals or challenges, and retry later from
+the same connection slot. A new password or repeated retries do not resolve an
+IP restriction. If the restriction persists, an operator must investigate the
+server's outbound IP and account verification before changing network settings.
+
+Server logs record fixed diagnostic categories for failed login attempts:
+authentication or account validation, device/authentication/feed/account step,
+typed failure category and HTTP status when supplied. They contain no exception
+text, raw response, username, password, code or session data. These diagnostics
+are not included in dashboard or MCP responses.
+
 Each slot reconnects to its originally verified identity. To switch the
 Instagram identity, remove that slot and add another. A personal Instagram
 account can appear only once within a cabinet. Sessions are never shared

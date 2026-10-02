@@ -84,3 +84,31 @@ test("Instagram login errors explain cabinet reauthentication", async () => {
   await d.submit("instagramLoginForm", { username: "alice", instagramPassword: "private-password" });
   assert.match(d.html(), /Войдите в кабинет снова/);
 });
+test("Instagram upstream rate limits explain recovery in the polled login view", async () => {
+  const d = await dashboard((path, method) => {
+    if (path === "/me") return new Response(JSON.stringify(cabinet()));
+    if (method === "POST")
+      return new Response(JSON.stringify({ id: "attempt", state: "starting", expiresAt: Date.now() + 300000 }), {
+        status: 202,
+      });
+    return new Response(
+      JSON.stringify({ id: "attempt", state: "failed", code: "rate-limited", expiresAt: Date.now() + 300000 }),
+    );
+  });
+  await d.hash("#instagram");
+  await d.submit("instagramLoginForm", { username: "alice", instagramPassword: "private-password" });
+  await d.poll();
+  assert.match(d.html(), /Instagram временно ограничил вход/);
+  assert.match(d.html(), /официальном приложении/);
+  assert.doesNotMatch(d.html(), /Подключение не завершено\. Повторите попытку/);
+});
+test("cabinet login rate limits retain the cabinet message", async () => {
+  const d = await dashboard((path) =>
+    path === "/me"
+      ? new Response(JSON.stringify({ error: "authentication-required" }), { status: 401 })
+      : new Response(JSON.stringify({ error: "rate-limited" }), { status: 429 }),
+  );
+  await d.submit("authForm", { login: "alice", password: "private-password" });
+  assert.match(d.html(), /Слишком много попыток/);
+  assert.doesNotMatch(d.html(), /Instagram временно ограничил вход/);
+});

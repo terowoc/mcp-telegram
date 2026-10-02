@@ -345,6 +345,7 @@ export class InstagramSupervisor {
       a.view.state = f.state;
       if (f.error) {
         a.view.code = safeCode(f.error);
+        if (f.diagnostic) console.warn("[instagram] login rejected", JSON.stringify({ code: a.view.code, ...f.diagnostic }));
         if (a.view.code === "rate-limited") this.options.store.cooldown(s.connection.id, Date.now() + 60000);
       } else delete a.view.code;
       if (f.state !== "needs-code") {

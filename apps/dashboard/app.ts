@@ -35,7 +35,7 @@ let selectedTelegramAccount: string | undefined;
 let selectedInstagramAccount:string|undefined;
 let instagramAttempt:InstagramAttempt|undefined;
 let instagramTimer:number|undefined;
-const instagramErrors:Record<string,string>={"needs-verification":"Откройте официальное приложение Instagram, подтвердите вход и повторите подключение.","invalid-code":"Неверный код. Проверьте код и повторите попытку.","needs-login":"Сессия Instagram истекла. Подключите аккаунт снова.","login-failed":"Не удалось войти в Instagram. Проверьте данные или подтвердите вход в официальном приложении.","reauthentication-required":"Войдите в кабинет снова, затем повторите подключение Instagram.","account-already-added":"Этот Instagram уже добавлен в ваш кабинет.","identity-mismatch":"Подключите тот же аккаунт Instagram или создайте новый слот.","account-capacity":"Можно добавить до пяти Instagram-аккаунтов.","worker-unavailable":"Instagram сейчас недоступен. Обновите статус и повторите попытку."};
+const instagramErrors:Record<string,string>={"rate-limited":"Instagram временно ограничил вход для аккаунта, устройства или IP сервера. Не повторяйте вход сразу: проверьте уведомления в официальном приложении и попробуйте позже. Срок ограничения задаёт Instagram.","needs-verification":"Откройте официальное приложение Instagram, подтвердите вход и повторите подключение.","invalid-code":"Неверный код. Проверьте код и повторите попытку.","needs-login":"Сессия Instagram истекла. Подключите аккаунт снова.","login-failed":"Не удалось войти в Instagram. Проверьте данные или подтвердите вход в официальном приложении.","reauthentication-required":"Войдите в кабинет снова, затем повторите подключение Instagram.","account-already-added":"Этот Instagram уже добавлен в ваш кабинет.","identity-mismatch":"Подключите тот же аккаунт Instagram или создайте новый слот.","account-capacity":"Можно добавить до пяти Instagram-аккаунтов.","worker-unavailable":"Instagram сейчас недоступен. Обновите статус и повторите попытку."};
 let clients: Client[] = [];
 let clientsState: "idle" | "loading" | "ready" | "error" = "idle";
 let renderedContext = "";
@@ -325,7 +325,7 @@ function showError(error: unknown): void {
   isError = true;
   message =
     error instanceof ApiError
-      ? (instagramErrors[error.code] ?? errors[error.code] ?? "Не удалось выполнить запрос. Попробуйте снова.")
+      ? ((page === "instagram" ? instagramErrors[error.code] : undefined) ?? errors[error.code] ?? "Не удалось выполнить запрос. Попробуйте снова.")
       : "Не удалось связаться с сервером. Проверьте соединение и попробуйте снова.";
   if (error instanceof ApiError && error.status === 401 && cabinet) {
     clearAttempt();
