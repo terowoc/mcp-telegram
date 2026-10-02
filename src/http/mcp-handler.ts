@@ -23,7 +23,13 @@ export function createMcpHandler(identity: GatewayIdentity, version: string, upl
     }
     const started = performance.now();
     const server = new McpServer({ name: "mcp-telegram", version: version });
-    registerHostedTools(server, identity.toolPolicy(accountId), !!uploads, identity.kind === "saas");
+    registerHostedTools(
+      server,
+      identity.toolPolicy(accountId),
+      !!uploads,
+      identity.kind === "saas",
+      identity.instagramEnabled === true,
+    );
     const catalogMs = performance.now() - started;
     wireIpcProxies(server, {
       call: async (name, args, callOptions) => {

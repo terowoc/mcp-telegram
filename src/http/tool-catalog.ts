@@ -1,5 +1,6 @@
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getObjectShape, objectFromShape } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import { registerInstagramTools } from "../instagram/tools.js";
 import type { McpRegisteredTool } from "../ipc-protocol.js";
 import type { TelegramService } from "../telegram-client.js";
 import type { ToolPolicy } from "../tool-policy.js";
@@ -20,6 +21,7 @@ export function registerHostedTools(
   policy: ToolPolicy,
   enableDirectUploads = false,
   enableAccounts = false,
+  enableInstagram = false,
 ): void {
   for (const { name, tool } of catalog) {
     if (!policy.visible(name, tool as unknown as McpRegisteredTool)) continue;
@@ -56,6 +58,10 @@ export function registerHostedTools(
     server.registerTool(ACCOUNT_LIST_TOOL, accountListDefinition, async () => {
       throw new Error("Hosted account list proxy is not configured");
     });
+  if (enableInstagram)
+    registerInstagramTools(server, (name, read) =>
+      policy.visible(name, { annotations: { readOnlyHint: read } } as McpRegisteredTool),
+    );
 }
 
 export function hostedToolVisible(policy: ToolPolicy, name: string): boolean {
