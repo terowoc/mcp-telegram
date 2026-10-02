@@ -127,7 +127,7 @@ export function createInstagramRoutes(options: {
       req.body = {};
       try {
         supervisor.submitCode(owner, id, String(req.params.attemptId), parsed.code);
-        res.sendStatus(202);
+        res.status(202).json({ accepted: true });
       } finally {
         parsed.code = "";
       }

@@ -267,3 +267,70 @@ test("Telegram Web bootstrap is unavailable and registration creates a password 
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("SaaS CLI shutdown closes an incomplete HTTP request after draining service resources", async () => {
+  const { spawn } = await import("node:child_process");
+  const { createServer, createConnection } = await import("node:net");
+  const { fileURLToPath } = await import("node:url");
+  const s = await setup();
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => reservation.once("listening", r));
+  const port = (reservation.address() as AddressInfo).port;
+  await new Promise<void>((r) => reservation.close(() => r()));
+  const child = spawn(
+    process.execPath,
+    ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../cli.ts", import.meta.url)), "saas"],
+    {
+      cwd: s.root,
+      env: {
+        ...process.env,
+        MCP_PUBLIC_URL: origin,
+        MCP_HTTP_PORT: String(port),
+        MCP_AUTH_DIR: s.config.authDir,
+        MCP_SESSION_KEY_FILE: s.config.sessionKeyFile,
+        MCP_TELEGRAM_FILE_ROOT: s.config.filesRoot,
+        TELEGRAM_API_ID: "1",
+        TELEGRAM_API_HASH: s.config.apiHash,
+        MCP_INSTAGRAM_ENABLED: "0",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let socket: ReturnType<typeof createConnection> | undefined;
+  const exited = new Promise<number | null>((r) => child.once("exit", r));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("CLI startup timed out")), 10000);
+      child.stderr.on("data", (chunk) => {
+        if (String(chunk).includes("[saas] listening")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.once("error", reject);
+    });
+    socket = createConnection({ host: "127.0.0.1", port });
+    socket.on("error", () => {});
+    await new Promise<void>((r) => socket!.once("connect", r));
+    socket.write(
+      `POST /api/saas/login HTTP/1.1\r\nHost: mcp.example.test\r\nX-Forwarded-Proto: https\r\nOrigin: ${origin}\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"login":`,
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    child.kill("SIGTERM");
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Incomplete HTTP request blocked graceful shutdown")), 3000);
+    });
+    try {
+      assert.equal(await Promise.race([exited, timeout]), 0);
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    socket?.destroy();
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await exited;
+    await rm(s.root, { recursive: true, force: true });
+  }
+});
