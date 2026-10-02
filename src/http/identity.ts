@@ -3,6 +3,7 @@ import { ToolPolicy as Policy } from "../tool-policy.js";
 import { verifyPassword } from "./owner.js";
 
 export interface GatewayIdentity {
+  readonly instagramEnabled?: boolean;
   readonly kind: "owner" | "saas";
   findAccount(id: string, grantId?: string): { accountId: string; claims: () => Promise<{ sub: string }> } | undefined;
   authenticate(credentials: { login?: string; password: string }): Promise<string | undefined>;

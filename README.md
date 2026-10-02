@@ -23,6 +23,7 @@ This fork includes a lightweight Telegram-style MCP cabinet. Register an account
 - [Dashboard build and account setup](docs/guides/web-a.md)
 - [SaaS API and storage](docs/guides/saas.md)
 - [Scoped production deployment and coherent rollback](docs/guides/saas-deployment.md)
+- [Personal Instagram DMs in the hosted cabinet](docs/guides/instagram.md) — optional login, chat reading and text replies with isolated encrypted sessions.
 
 The image runs `saas`. Existing stdio, daemon, login and single-owner HTTP modes remain available. `npm run web:build` uses the root TypeScript dependency and needs no Telegram credentials. GitHub Actions runs only image build and VPS deployment; health checks and automatic rollback remain enabled.
 

@@ -4,6 +4,8 @@ import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { GlobalLock } from "../global-lock.js";
 import { verifyPassword } from "../http/owner.js";
+import { createInstagramRoutes, instagramAccounts } from "../instagram/routes.js";
+import type { InstagramSupervisor } from "../instagram/supervisor.js";
 import { hashOpaqueToken, type SaasAuth } from "./auth.js";
 import type { BootstrapContexts } from "./bootstrap-contexts.js";
 import { LoginAttempts, type LoginSupervisor } from "./login-attempts.js";
@@ -30,6 +32,7 @@ const policySchema = z.object({
   chatIds: z.array(z.string().regex(/^-?[1-9]\d{0,19}$/)).max(100),
 });
 interface Options {
+  instagram?: InstagramSupervisor;
   auth: SaasAuth;
   store: SaasStore;
   supervisor: LoginSupervisor;
@@ -161,6 +164,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
       return;
     }
     if (user) {
+      await options.instagram?.clearOwner(user.id, true);
       for (const connection of store.listTelegramConnections(user.id)) {
         const stopping = supervisor.stopUser(connection.id);
         await attempts.clearUser(connection.id);
@@ -247,6 +251,11 @@ export function createSaasRoutes(options: Options): SaasRouter {
     await stopping;
     await cleanupGrants(ids);
   };
+  if (options.instagram)
+    router.use(
+      "/instagram",
+      createInstagramRoutes({ store, supervisor: options.instagram, revokeGrants: options.revokeGrants, mutation }),
+    );
   router.get("/me", (_req, res) => {
     const session = res.locals.saas;
     const user = store.findUser(session.userId);
@@ -274,6 +283,9 @@ export function createSaasRoutes(options: Options): SaasRouter {
       policy: selectedUser.policy,
       telegram: supervisor.status(res.locals.telegramAccountId),
       mcpUrl: `${origin}/mcp`,
+      ...(options.instagram
+        ? { instagram: { enabled: true, accounts: instagramAccounts(store, options.instagram, session.userId) } }
+        : {}),
     });
   });
   router.post("/oauth/resume", (req, res) => {
@@ -294,6 +306,7 @@ export function createSaasRoutes(options: Options): SaasRouter {
     "/logout",
     mutation(async (_req, res, userId) => {
       auth.logout(saasCookie(_req));
+      await options.instagram?.clearOwner(userId);
       for (const connection of store.listTelegramConnections(userId)) await attempts.clearUser(connection.id);
       clearCookie(res);
       res.sendStatus(204);
@@ -542,7 +555,10 @@ export function createSaasRoutes(options: Options): SaasRouter {
         return;
       }
       const ids = store.listGrants(userId).map((g) => g.grantId);
+      if (options.instagram) for (const id of store.instagram.ownedIds(userId)) store.instagram.remove(userId, id);
       const owned = store.requestCabinetDeletion(userId);
+      await options.instagram?.clearOwner(userId, true);
+      if (options.instagram) for (const id of store.instagram.ownedIds(userId)) await options.instagram.purge(id);
       for (const id of [...owned].reverse()) {
         await stopAccess(id, id === userId ? ids : []);
         await options.purgeUserFiles?.(id);

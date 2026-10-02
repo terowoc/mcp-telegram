@@ -1591,3 +1591,6 @@ body {
 }
 
 .accountChoices{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0}.accountDetail code{overflow-wrap:anywhere;word-break:break-all;font-size:.8rem}.card details{margin-top:1rem}.card details form{margin-top:1rem}
+
+.instagramCard { border-top: 3px solid var(--accent, #8b5cf6); }
+.instagramCard .accountDetail code { overflow-wrap: anywhere; }

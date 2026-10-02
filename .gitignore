@@ -35,3 +35,7 @@ coverage/
 manifest.json
 
 .superpowers/
+__pycache__/
+*.pyc
+
+.venv-instagram/
