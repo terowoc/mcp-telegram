@@ -4,6 +4,12 @@ Run `mcp-telegram http` behind an HTTPS reverse proxy. The gateway uses Streamab
 
 The owner signs in using a dedicated password, independent of the VPS password and Telegram two-factor password. Store only its scrypt hash in the mounted `owner-password.hash`; keep the original password in a password manager. There is no public account registration. OAuth clients can register without receiving access until the owner approves them. Tokens, grants and signing keys persist in `data/auth`; back up that directory together with the Telegram session and owner hash.
 
+Approved MCP connections have no scheduled grant or refresh-token expiry. One-hour access tokens renew through `/oauth/token` without a browser session or another login, whether or not the client requests `offline_access`. Clients must register the `refresh_token` grant and save the new refresh token returned on each renewal. Public clients and clients using `client_secret_post` or `client_secret_basic` use the same lifecycle. Consumed refresh tokens remain for 24 hours of replay detection before cleanup; a replay during that window revokes the grant.
+
+Maintenance reclaims revoked approvals and orphan refresh tokens. When storage lacks room for a replacement refresh/access pair, renewal returns `503 temporarily_unavailable` with `Retry-After: 60` before consuming the current refresh token; clients should retry instead of reconnecting.
+
+On upgrade, existing unexpired, unrevoked grants and tokens migrate automatically. Expired or previously deleted credentials cannot be recovered and may require one reconnection. Revocation, credential recovery, permission changes and account removal still stop access. Preserve `data/auth` across deployments; losing OAuth storage also requires reconnection.
+
 ## VPS layout
 
 Use a dedicated directory `/opt/mcp-telegram` with `compose.yaml`, `telegram.env`, `owner-password.hash`, `deployment.env`, and private `data/telegram`, `data/auth`, `data/files` directories. Persistent directories belong to UID 1000, permissions 0700. Compose binds only `127.0.0.1:18770`; nginx owns public HTTPS. Copy `packaging/compose.production.yaml` and configure a new vhost from `packaging/nginx.conf`. Validate nginx before reload. Provision the certificate using certbot's webroot plugin; do not modify other vhosts.

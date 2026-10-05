@@ -14,6 +14,8 @@ After connecting Telegram, the cabinet displays the HTTPS `/mcp` endpoint, Strea
 
 AI clients authenticate through the same cabinet registration/login and still need explicit OAuth consent. `prompt=login` and `max_age` require fresh authentication when applicable. Expired continuations must be restarted from the client. Existing accounts are removed for this release by the owner's explicit request; users register again.
 
+After approval, MCP grants and current refresh tokens remain valid until revoked, including across cabinet logout, browser-session expiry, server restarts and prolonged inactivity. Clients renew one-hour access tokens automatically without asking the user to authenticate again; they must support the `refresh_token` grant and persist each rotated refresh token. Existing valid connections migrate automatically on upgrade. Revoking a client, recovering credentials, changing permissions or disconnecting an account still invalidates its access.
+
 ## Cabinet interface
 
 The cabinet and OAuth connection pages share Telegram-style light and dark themes. Appearance follows the system by default; the theme button cycles through dark, light and automatic. The preference uses `mcp-ui-theme` browser storage and a non-authentication cookie so connection pages use the same appearance.

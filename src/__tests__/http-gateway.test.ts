@@ -133,7 +133,7 @@ describe("authenticated HTTPS gateway contract", () => {
     );
   });
 
-  async function authorize() {
+  async function authorize(authMethod = "none", scope = "mcp:tools") {
     const registration = await request(
       "/oauth/reg",
       json({
@@ -141,7 +141,7 @@ describe("authenticated HTTPS gateway contract", () => {
         redirect_uris: ["https://client.example/callback"],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
-        token_endpoint_auth_method: "none",
+        token_endpoint_auth_method: authMethod,
       }),
     );
     assert.equal(registration.status, 201, await registration.clone().text());
@@ -152,7 +152,8 @@ describe("authenticated HTTPS gateway contract", () => {
       client_id: client.client_id,
       redirect_uri: "https://client.example/callback",
       response_type: "code",
-      scope: "mcp:tools",
+      scope,
+      ...(scope.includes("offline_access") ? { prompt: "consent" } : {}),
       code_challenge: challenge,
       code_challenge_method: "S256",
       resource: `${publicUrl}/mcp`,
@@ -195,6 +196,122 @@ describe("authenticated HTTPS gateway contract", () => {
     throw new Error("OAuth flow did not finish");
   }
 
+  for (const authMethod of ["none", "client_secret_post", "client_secret_basic"]) {
+    for (const scope of ["mcp:tools", "openid offline_access mcp:tools"]) {
+      it(`refreshes without browser authentication after a year (${authMethod}, ${scope})`, async (t) => {
+        const issued = await authorize(authMethod, scope);
+        const tokenRequest = (values: Record<string, string>) => {
+          const init = form({
+            client_id: issued.client.client_id,
+            ...values,
+            ...(authMethod === "client_secret_post" ? { client_secret: issued.client.client_secret } : {}),
+          });
+          const headers = new Headers(init.headers);
+          headers.set("cookie", "");
+          if (authMethod === "client_secret_basic")
+            headers.set(
+              "authorization",
+              `Basic ${Buffer.from(`${issued.client.client_id}:${issued.client.client_secret}`).toString("base64")}`,
+            );
+          return request("/oauth/token", { ...init, headers });
+        };
+        const redeemed = await tokenRequest({
+          grant_type: "authorization_code",
+          code: issued.code,
+          code_verifier: issued.verifier,
+          redirect_uri: "https://client.example/callback",
+          resource: `${publicUrl}/mcp`,
+        });
+        assert.equal(redeemed.status, 200, await redeemed.clone().text());
+        let tokens = await redeemed.json();
+        t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+        for (const days of [3, 365]) {
+          t.mock.timers.tick(days * 86400000);
+          assert.equal(
+            (await request("/mcp", { headers: { cookie: "", authorization: `Bearer ${tokens.access_token}` } })).status,
+            401,
+            "Access tokens must still expire",
+          );
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+          await gateway.close();
+          await start();
+          const refreshed = await tokenRequest({
+            grant_type: "refresh_token",
+            refresh_token: tokens.refresh_token,
+            ...(days === 3 ? { resource: `${publicUrl}/mcp` } : {}),
+          });
+          assert.equal(refreshed.status, 200, await refreshed.clone().text());
+          const next = await refreshed.json();
+          assert.notEqual(next.refresh_token, tokens.refresh_token, "Public clients retain replay protection");
+          tokens = next;
+          const tools = await request("/mcp", {
+            method: "POST",
+            headers: {
+              cookie: "",
+              authorization: `Bearer ${tokens.access_token}`,
+              accept: "application/json, text/event-stream",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+          });
+          assert.equal(tools.status, 200, await tools.clone().text());
+        }
+      });
+    }
+  }
+
+  it("upgrades an existing session-bound connection without another authorization", async () => {
+    const issued = await authorize();
+    const redeemed = await request(
+      "/oauth/token",
+      form({
+        grant_type: "authorization_code",
+        client_id: issued.client.client_id,
+        code: issued.code,
+        code_verifier: issued.verifier,
+        redirect_uri: "https://client.example/callback",
+        resource: `${publicUrl}/mcp`,
+      }),
+    );
+    assert.equal(redeemed.status, 200);
+    const tokens = await redeemed.json();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await gateway.close();
+    const db = new DatabaseSync(join(dir, "oauth.sqlite"));
+    const expiry = Math.floor(Date.now() / 1000) + 30 * 86400;
+    db.prepare("UPDATE oauth SET expires=?,data=json_set(data,'$.exp',?) WHERE model='Grant'").run(expiry, expiry);
+    db.prepare(
+      "UPDATE oauth SET expires=?,data=json_set(data,'$.exp',?,'$.expiresWithSession',json('true')) WHERE model='RefreshToken' AND json_extract(data,'$.consumed') IS NULL",
+    ).run(expiry, expiry);
+    db.prepare(
+      "UPDATE oauth SET data=json_set(data,'$.expiresWithSession',json('true')) WHERE model='AccessToken'",
+    ).run();
+    db.prepare("DELETE FROM oauth WHERE model='Session'").run();
+    db.close();
+    await start();
+    const existingAccess = await request("/mcp", {
+      method: "POST",
+      headers: {
+        cookie: "",
+        authorization: `Bearer ${tokens.access_token}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    assert.equal(existingAccess.status, 200, await existingAccess.clone().text());
+    const refreshed = await request(
+      "/oauth/token",
+      form({
+        grant_type: "refresh_token",
+        client_id: issued.client.client_id,
+        refresh_token: tokens.refresh_token,
+        resource: `${publicUrl}/mcp`,
+      }),
+    );
+    assert.equal(refreshed.status, 200, await refreshed.clone().text());
+  });
+
   it("expired connection links give a browser recovery page while API errors remain JSON", async () => {
     const response = await request("/interaction/missing-interaction", { headers: { accept: "text/html" } });
     assert.equal(response.status, 400);
@@ -204,6 +321,49 @@ describe("authenticated HTTPS gateway contract", () => {
     assert.match(html, /Начните подключение заново/);
     const api = await request("/oauth/token", json({ grant_type: "bad-fixture" }));
     assert.match(api.headers.get("content-type") ?? "", /application\/json/);
+  });
+
+  it("a storage-full renewal can be retried with the same token without reconnecting", async () => {
+    const issued = await authorize();
+    const redeemed = await request(
+      "/oauth/token",
+      form({
+        grant_type: "authorization_code",
+        client_id: issued.client.client_id,
+        code: issued.code,
+        code_verifier: issued.verifier,
+        redirect_uri: "https://client.example/callback",
+        resource: `${publicUrl}/mcp`,
+      }),
+    );
+    assert.equal(redeemed.status, 200);
+    const tokens = await redeemed.json();
+    const db = new DatabaseSync(join(dir, "oauth.sqlite"));
+    try {
+      const rows = db.prepare("SELECT count(*) AS n FROM oauth").get() as { n: number };
+      db.prepare(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?)
+        INSERT INTO oauth(model,id,data) SELECT 'Client','capacity-filler-'||x,'{}' FROM n`).run(10000 - rows.n);
+      const refresh = () =>
+        request(
+          "/oauth/token",
+          form({
+            grant_type: "refresh_token",
+            client_id: issued.client.client_id,
+            refresh_token: tokens.refresh_token,
+            resource: `${publicUrl}/mcp`,
+          }),
+        );
+      const busy = await refresh();
+      assert.equal(busy.status, 503, await busy.clone().text());
+      assert.equal(busy.headers.get("retry-after"), "60");
+      assert.equal((await busy.json()).error, "temporarily_unavailable");
+      db.prepare("DELETE FROM oauth WHERE id LIKE 'capacity-filler-%'").run();
+      const renewed = await refresh();
+      assert.equal(renewed.status, 200, await renewed.clone().text());
+    } finally {
+      db.prepare("DELETE FROM oauth WHERE id LIKE 'capacity-filler-%'").run();
+      db.close();
+    }
   });
 
   it("connection recovery honors only recognized appearance preferences", async () => {

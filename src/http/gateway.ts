@@ -51,6 +51,7 @@ export async function createHttpGateway(options: GatewayOptions) {
   const secrets = await loadOrCreateSecrets(options.storageDir);
   const Adapter = createAdapter(join(options.storageDir, "oauth.sqlite"), {
     authenticationBinding: identity.authenticationBinding,
+    persistentAuthorization: { isGrantValid: (accountId, grantId) => identity.isGrantValid(accountId, grantId) },
   });
   const policy = interactionPolicy.base();
   if (options.cabinetLogin) {
@@ -90,10 +91,13 @@ export async function createHttpGateway(options: GatewayOptions) {
     scopes: ["openid", "offline_access", "mcp:tools"],
     pkce: { required: () => true },
     issueRefreshToken: (_ctx, client) => client.grantTypeAllowed("refresh_token"),
+    expiresWithSession: () => false,
     rotateRefreshToken: true,
     ttl: {
       AccessToken: 3600,
       AuthorizationCode: 60,
+      // The persistent adapter removes exp from live grants and refresh tokens;
+      // finite issuance TTLs are required by oidc-provider's configuration API.
       RefreshToken: 30 * 86400,
       Interaction: 600,
       Session: 86400,
@@ -138,6 +142,7 @@ export async function createHttpGateway(options: GatewayOptions) {
   provider.proxy = true;
   provider.use(async (ctx, next) => {
     await next();
+    if (ctx.status === 503) ctx.set("Retry-After", "60");
     // oidc-provider hashes its own inline form_post script. Keep that hash and
     // permit a POST only to the registered redirect URI's origin.
     const redirect = ctx.oidc?.params?.redirect_uri;

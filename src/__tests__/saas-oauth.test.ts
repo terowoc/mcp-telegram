@@ -237,6 +237,37 @@ test("existing_cabinet_cookie_skips_password_but_not_consent", async () => {
     await s.close();
   }
 });
+test("approved SaaS clients refresh after cabinet logout and a year of inactivity", async (t) => {
+  const s = await setup(true);
+  try {
+    const a = await s.authorize("alice", undefined, s.alice.sessionToken);
+    s.auth.logout(s.alice.sessionToken);
+    const request = s.jars();
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    t.mock.timers.tick(366 * 86400000);
+    await s.stop();
+    await s.start();
+    const renewed = await request("/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: a.client.client_id,
+        refresh_token: a.tokens.refresh_token,
+        resource: `${origin}/mcp`,
+      }),
+    });
+    assert.equal(renewed.status, 200, await renewed.clone().text());
+    const tokens = await renewed.json();
+    assert.equal((await s.rpc(tokens, "tools/list")).status, 200);
+    const grant = s.store.listGrants(s.alice.userId)[0];
+    s.store.revokeGrant(s.alice.userId, grant.grantId);
+    assert.equal((await s.rpc(tokens, "tools/list")).status, 401);
+    assert.equal((await s.refresh({ ...a, tokens })).status, 400);
+  } finally {
+    await s.close();
+  }
+});
 async function loginInteraction(
   s: Awaited<ReturnType<typeof setup>>,
   params: Record<string, string> = {},
