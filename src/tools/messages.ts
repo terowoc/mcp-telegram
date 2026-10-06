@@ -107,7 +107,12 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
               `[#${m.id}] [${m.date}] ${m.sender}: ${m.text}${m.media ? ` [${m.media.type}${m.media.fileName ? `: ${m.media.fileName}` : ""}]` : ""}${formatReactions(m.reactions)}`,
           )
           .join("\n\n");
-        return ok(text || "No messages");
+        // A short/empty page is not proof of the end of available history.
+        return ok(text || "No messages", {
+          messages,
+          reachedEnd: messages.reachedEnd === true,
+          ...(messages.length ? { nextOffsetId: messages[messages.length - 1].messageId } : {}),
+        });
       } catch (e) {
         return fail(e);
       }

@@ -2228,12 +2228,17 @@ export class TelegramService {
   ): Promise<
     Array<{
       id: number;
+      messageId: string;
+      peerId: string | null;
+      senderId: string | null;
+      outgoing: boolean;
+      forwarded: boolean;
       text: string;
       sender: string;
       date: string;
       media?: { type: string; fileName?: string; size?: number };
       reactions?: { emoji: string; count: number; me: boolean }[];
-    }>
+    }> & { reachedEnd?: boolean }
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const resolved = await this.resolvePeer(chatId);
@@ -2250,6 +2255,12 @@ export class TelegramService {
     const results = await Promise.all(
       filtered.map(async (m) => ({
         id: m.id,
+        // Original transport metadata only; never derive identities from body text.
+        messageId: String(m.id),
+        peerId: m.peerId ? getPeerId(m.peerId).toString() : null,
+        senderId: m.senderId?.toString() ?? null,
+        outgoing: Boolean(m.out),
+        forwarded: Boolean(m.fwdFrom),
         text: m.message ?? "",
         sender: await this.resolveSenderName(m.senderId, m.sender),
         date: new Date((m.date ?? 0) * 1000).toISOString(),
@@ -2257,7 +2268,13 @@ export class TelegramService {
         reactions: this.extractReactions(m.reactions),
       })),
     );
-    return results;
+    // TotalList.total comes from Telegram response count, not page length.
+    // Only an unfiltered latest page containing the entire reported history
+    // can establish exhaustion without maintaining cross-page scan state.
+    return Object.assign(results, { reachedEnd:
+      !offsetId && !minDate && !maxDate &&
+      Number.isSafeInteger(messages.total) && messages.total === messages.length,
+    });
   }
 
   async searchChats(
