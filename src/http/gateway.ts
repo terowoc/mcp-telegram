@@ -5,6 +5,7 @@ import { rateLimit } from "express-rate-limit";
 import Provider, { type Configuration, errors, interactionPolicy } from "oidc-provider";
 import type { BootstrapContexts } from "../saas/bootstrap-contexts.js";
 import type { OAuthContinuations } from "../saas/oauth-continuations.js";
+import { DirectMediaDownloads } from "./direct-media-download.js";
 import { DirectMediaUploads } from "./direct-media-upload.js";
 import { type GatewayIdentity, ownerIdentity } from "./identity.js";
 import { createMcpHandler } from "./mcp-handler.js";
@@ -15,6 +16,7 @@ import { createAdapter } from "./storage.js";
 export interface GatewayOptions {
   publicUrl: string;
   storageDir: string;
+  mediaRoot?: string;
   ownerPasswordHash?: string;
   identity?: GatewayIdentity;
   version: string;
@@ -158,7 +160,23 @@ export async function createHttpGateway(options: GatewayOptions) {
     identity,
     validateGrant: async (id) => !!(await provider.Grant.find(id)),
   });
-  const mcpHandler = createMcpHandler(identity, options.version, uploads);
+  const downloads =
+    options.mediaRoot && identity.kind === "saas"
+      ? new DirectMediaDownloads({
+          root: options.mediaRoot,
+          origin,
+          identity,
+          validateGrant: async (id) => !!(await provider.Grant.find(id)),
+        })
+      : undefined;
+  try {
+    await downloads?.initialize();
+  } catch (e) {
+    await downloads?.close();
+    Adapter.close();
+    throw e;
+  }
+  const mcpHandler = createMcpHandler(identity, options.version, uploads, downloads);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", options.trustProxy ?? "loopback");
@@ -515,6 +533,7 @@ export async function createHttpGateway(options: GatewayOptions) {
   );
   app.use("/oauth", provider.callback());
   uploads.mount(app);
+  downloads?.mount(app);
   const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="mcp:tools"`;
   const anonymousMcpLimit = rateLimit({
     windowMs: 60000,
@@ -579,7 +598,10 @@ export async function createHttpGateway(options: GatewayOptions) {
   app.use(onError);
   return {
     app,
-    stopUploads: () => uploads.close(),
+    stopUploads: () => {
+      uploads.close();
+      downloads?.stop();
+    },
     clientName: async (id: string) => (await provider.Client.find(id))?.clientName,
     revokeGrants: async (ids: string[]) => {
       for (const id of ids) {
@@ -590,6 +612,7 @@ export async function createHttpGateway(options: GatewayOptions) {
     },
     close: async () => {
       uploads.close();
+      await downloads?.close();
       Adapter.close();
     },
   };

@@ -1359,6 +1359,15 @@ export class TelegramService {
   }
 
   async downloadMedia(chatId: string, messageId: number, downloadPath: string): Promise<string> {
+    await this.downloadMediaWithInfo(chatId, messageId, downloadPath);
+    return downloadPath;
+  }
+
+  async downloadMediaWithInfo(
+    chatId: string,
+    messageId: number,
+    downloadPath: string,
+  ): Promise<{ fileName: string; sizeBytes: number }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const resolved = await this.resolvePeer(chatId);
     const messages = await this.client.getMessages(resolved, { ids: [messageId] });
@@ -1371,9 +1380,14 @@ export class TelegramService {
         mediaPolicy().checkSize(Number(total));
       },
     });
-    if (!buffer) throw new Error("Failed to download media");
+    if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) throw new Error("Failed to download media");
     await mediaPolicy().save(downloadPath, buffer as Buffer);
-    return downloadPath;
+    const info = this.extractMediaInfo(message.media);
+    return {
+      fileName:
+        info?.fileName ?? (info?.type === "photo" ? `telegram-photo-${messageId}.jpg` : `telegram-${messageId}.bin`),
+      sizeBytes: buffer.length,
+    };
   }
 
   /**

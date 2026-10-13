@@ -16,6 +16,10 @@ Use a dedicated directory `/opt/mcp-telegram` with `compose.yaml`, `telegram.env
 
 The production image uses Node 24, a non-root user, production dependencies, a read-only root filesystem and memory/CPU/PID limits. Upload paths must stay under `/data/files`; URLs and symlink escapes are rejected. Downloads create new files exclusively and reject overwrites. The default hosted media size limit is 20 MiB. HTTP request and tool response limits are 1 MiB and 2 MiB respectively; paginate large reads.
 
+The SaaS cabinet exposes private, five-minute browser download links through
+`telegram-download-media`. See [browser downloads](browser-downloads.md) for
+usage, permission checks, account selection and temporary-file cleanup.
+
 ## Automated deployment
 
 GitHub Actions checks lint, types and tests before publishing `ghcr.io/terowoc/mcp-telegram`. It deploys an immutable digest over a dedicated SSH key. The VPS command updates only the `mcp-telegram` Compose project, stops the old owner before starting a replacement, and restores the previous image if readiness fails. It takes a consistent OAuth database backup while the old service is stopped. Existing Docker projects are outside this command's scope.
