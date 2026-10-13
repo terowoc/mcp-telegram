@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { wireIpcProxies } from "../client.js";
 import { registerHostedTools } from "../http/tool-catalog.js";
 import type { McpServerInternal } from "../ipc-protocol.js";
 import type { TelegramService } from "../telegram-client.js";
@@ -8,6 +11,38 @@ import { applyToolProfile, ToolPolicy } from "../tool-policy.js";
 import { registerTools } from "../tools/index.js";
 
 const tools = (server: McpServer) => (server as unknown as McpServerInternal)._registeredTools;
+test("real SDK dispatch preserves and validates account selectors on tools without native arguments", async () => {
+  const server = new McpServer({ name: "account-dispatch", version: "test" });
+  const client = new Client({ name: "account-client", version: "test" });
+  const selected = "11111111-1111-4111-8111-111111111111";
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  registerHostedTools(server, new ToolPolicy({ profile: "full" }), false, true);
+  wireIpcProxies(server, {
+    call: async (name, args) => {
+      calls.push({ name, args });
+      return { content: [{ type: "text", text: "fixture result" }] };
+    },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    for (const name of ["telegram-status", "telegram-get-chat-folders"]) {
+      const response = await client.callTool({ name, arguments: { telegramAccountId: selected } });
+      assert.notEqual(response.isError, true);
+      assert.deepEqual(calls.at(-1), { name, args: { telegramAccountId: selected } });
+    }
+    const count = calls.length;
+    const invalid = await client.callTool({ name: "telegram-status", arguments: { telegramAccountId: "not-a-uuid" } });
+    assert.equal(invalid.isError, true);
+    assert.equal(calls.length, count);
+    await client.callTool({ name: "telegram-status", arguments: {} });
+    assert.deepEqual(calls.at(-1)?.args, {});
+    const catalog = await client.listTools();
+    assert.ok(catalog.tools.find((t) => t.name === "telegram-status")?.inputSchema.properties?.telegramAccountId);
+  } finally {
+    await Promise.all([client.close(), server.close()]);
+  }
+});
 test("direct upload links are hosted-only and respect read-only and chat policies", async () => {
   for (const [policy, enabled, expected] of [
     [new ToolPolicy({ profile: "full" }), true, true],

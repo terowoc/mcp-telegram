@@ -21,6 +21,16 @@ export function createMcpHandler(identity: GatewayIdentity, version: string, upl
         .json({ jsonrpc: "2.0", error: { code: -32600, message: "Request ID exceeds 128 bytes" }, id: null });
       return;
     }
+    // MCP permits omitted arguments. Normalize them before object-schema validation,
+    // while leaving explicitly invalid values and required-field checks intact.
+    if (
+      req.body?.method === "tools/call" &&
+      req.body.params &&
+      typeof req.body.params === "object" &&
+      !Array.isArray(req.body.params) &&
+      !Object.hasOwn(req.body.params, "arguments")
+    )
+      req.body.params.arguments = {};
     const started = performance.now();
     const server = new McpServer({ name: "mcp-telegram", version: version });
     registerHostedTools(server, identity.toolPolicy(accountId), !!uploads, identity.kind === "saas");

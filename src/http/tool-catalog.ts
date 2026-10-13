@@ -28,10 +28,9 @@ export function registerHostedTools(
       {
         title: tool.title,
         description: tool.description,
-        inputSchema:
-          enableAccounts && tool.inputSchema
-            ? objectFromShape({ ...getObjectShape(tool.inputSchema), ...accountSelector })
-            : tool.inputSchema,
+        inputSchema: enableAccounts
+          ? objectFromShape({ ...(tool.inputSchema ? getObjectShape(tool.inputSchema) : {}), ...accountSelector })
+          : tool.inputSchema,
         outputSchema: tool.outputSchema,
         annotations: tool.annotations ? { ...tool.annotations } : undefined,
         _meta: tool._meta ? { ...tool._meta } : undefined,
