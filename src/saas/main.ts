@@ -4,8 +4,6 @@ import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import express from "express";
 import { createHttpGateway } from "../http/gateway.js";
-import { InstagramSupervisor } from "../instagram/supervisor.js";
-import { InstagramVault } from "../instagram/vault.js";
 import { MediaUploadStore } from "../media-upload.js";
 import { SaasAuth } from "./auth.js";
 import { BootstrapContexts } from "./bootstrap-contexts.js";
@@ -38,8 +36,6 @@ export async function cleanupPendingAccounts(
 }
 
 export interface SaasConfig {
-  instagramEnabled?: boolean;
-  instagramPython?: string;
   publicUrl: string;
   authDir: string;
   sessionKeyFile: string;
@@ -109,8 +105,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SaasConfig 
       .map((origin) => origin.trim())
       .filter(Boolean),
     version: env.npm_package_version ?? "1.43.1",
-    instagramEnabled: env.MCP_INSTAGRAM_ENABLED === "1",
-    instagramPython: env.MCP_INSTAGRAM_PYTHON ?? "python3",
   });
 }
 export async function startSaas(config: SaasConfig, options: { spawn?: typeof fork } = {}) {
@@ -126,11 +120,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
   await mkdir(config.filesRoot, { recursive: true, mode: 0o700 });
   const store = createSaasStore(join(config.authDir, "saas.sqlite"), { maxUsers: config.maxUsers });
   const auth = new SaasAuth(store, { csrfKey: createHmac("sha256", key).update("tg-bridge/saas/csrf/v1").digest() });
-  let instagram: InstagramSupervisor | undefined;
-  const budget = new WorkerBudget(config.maxWorkers ?? 4, async () => {
-    await supervisor.evictIdle();
-    if (budget.isFull()) await instagram?.evictIdle();
-  });
+  const budget = new WorkerBudget(config.maxWorkers ?? 4, () => supervisor.evictIdle());
   const supervisor = new WorkerSupervisor({
     budget,
     store,
@@ -142,29 +132,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     idleMs: config.workerIdleMs,
     onTiming: (timing) => console.error(`[mcp-tool] ${JSON.stringify(timing)}`),
     spawn: options.spawn,
-    reclaimOtherIdle: async () => {
-      await instagram?.evictIdle();
-    },
   });
-  if (config.instagramEnabled) {
-    instagram = new InstagramSupervisor({
-      store: store.instagram,
-      vault: new InstagramVault(key),
-      budget,
-      python: config.instagramPython ?? "python3",
-      filesRoot: config.filesRoot,
-      idleMs: config.workerIdleMs ?? 1800000,
-    });
-    try {
-      await instagram.validateRuntime();
-      for (const id of store.instagram.pendingRemovals()) await instagram.purge(id);
-    } catch (error) {
-      await instagram.close();
-      await supervisor.close();
-      store.close();
-      throw error;
-    }
-  }
   let closing = false;
   const contexts = new BootstrapContexts({
     csrfKey: createHmac("sha256", key).update("tg-bridge/bootstrap/csrf/v1").digest(),
@@ -176,14 +144,13 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
       publicUrl: config.publicUrl,
       storageDir: join(config.authDir, "oauth"),
       version: config.version,
-      identity: createSaasIdentity(store, auth, supervisor, instagram ? { supervisor: instagram } : undefined),
+      identity: createSaasIdentity(store, auth, supervisor),
       cabinetLogin: { contexts, continuations },
       isHealthy: () => !closing,
       trustProxy: 1,
       allowedOrigins: config.allowedOrigins,
     });
   } catch (error) {
-    await instagram?.close();
     await supervisor.close();
     store.close();
     throw error;
@@ -192,7 +159,6 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     auth,
     store,
     supervisor,
-    instagram,
     publicUrl: config.publicUrl,
     revokeGrants: gateway.revokeGrants,
     clientName: gateway.clientName,
@@ -206,14 +172,9 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     pruning = (async () => {
       await cleanupPendingAccounts(
         store,
-        async (id) => {
-          await instagram?.clearOwner(id, true);
-          if (instagram) for (const connection of store.instagram.ownedIds(id)) await instagram.purge(connection);
-          await supervisor.stopUser(id);
-        },
+        (id) => supervisor.stopUser(id),
         (id) => rm(join(config.filesRoot, id), { recursive: true, force: true }),
       );
-      if (instagram) for (const id of store.instagram.pendingRemovals()) await instagram.purge(id);
       for (const entry of await readdir(config.filesRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name) || supervisor.status(entry.name).busy) continue;
         // Grace exceeds the worker deadline, so an upload already in progress can settle.
@@ -248,7 +209,6 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     gateway.stopUploads();
     clearInterval(mediaCleanup);
     const workers = supervisor.close(); // forbid admission before draining browser attempts
-    const instagramWorkers = instagram?.close();
     closePromise = (async () => {
       try {
         await pruning;
@@ -257,7 +217,6 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
         await routes.close();
       } finally {
         await workers;
-        await instagramWorkers;
         try {
           await gateway.close();
         } finally {

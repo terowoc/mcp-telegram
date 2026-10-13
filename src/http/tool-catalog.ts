@@ -1,7 +1,5 @@
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getObjectShape, objectFromShape } from "@modelcontextprotocol/sdk/server/zod-compat.js";
-import { z } from "zod";
-import { registerInstagramTools } from "../instagram/tools.js";
 import type { McpRegisteredTool } from "../ipc-protocol.js";
 import type { TelegramService } from "../telegram-client.js";
 import type { ToolPolicy } from "../tool-policy.js";
@@ -22,9 +20,7 @@ export function registerHostedTools(
   policy: ToolPolicy,
   enableDirectUploads = false,
   enableAccounts = false,
-  enableInstagram = false,
 ): void {
-  const protocolGuard: Record<string, z.ZodType> = enableInstagram ? { instagramAccountId: z.never().optional() } : {};
   for (const { name, tool } of catalog) {
     if (!policy.visible(name, tool as unknown as McpRegisteredTool)) continue;
     server.registerTool(
@@ -33,12 +29,8 @@ export function registerHostedTools(
         title: tool.title,
         description: tool.description,
         inputSchema:
-          enableInstagram || (enableAccounts && tool.inputSchema)
-            ? objectFromShape({
-                ...(tool.inputSchema ? getObjectShape(tool.inputSchema) : {}),
-                ...(enableAccounts ? accountSelector : {}),
-                ...protocolGuard,
-              })
+          enableAccounts && tool.inputSchema
+            ? objectFromShape({ ...getObjectShape(tool.inputSchema), ...accountSelector })
             : tool.inputSchema,
         outputSchema: tool.outputSchema,
         annotations: tool.annotations ? { ...tool.annotations } : undefined,
@@ -54,24 +46,16 @@ export function registerHostedTools(
       DIRECT_UPLOAD_TOOL,
       {
         ...directUploadDefinition,
-        inputSchema: {
-          ...directUploadDefinition.inputSchema,
-          ...(enableAccounts ? accountSelector : {}),
-          ...protocolGuard,
-        },
+        inputSchema: { ...directUploadDefinition.inputSchema, ...(enableAccounts ? accountSelector : {}) },
       },
       async () => {
         throw new Error("Hosted upload link proxy is not configured");
       },
     );
   if (enableAccounts)
-    server.registerTool(ACCOUNT_LIST_TOOL, { ...accountListDefinition, inputSchema: protocolGuard }, async () => {
+    server.registerTool(ACCOUNT_LIST_TOOL, accountListDefinition, async () => {
       throw new Error("Hosted account list proxy is not configured");
     });
-  if (enableInstagram)
-    registerInstagramTools(server, (name, read) =>
-      policy.visible(name, { annotations: { readOnlyHint: read } } as McpRegisteredTool),
-    );
 }
 
 export function hostedToolVisible(policy: ToolPolicy, name: string): boolean {

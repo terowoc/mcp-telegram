@@ -292,7 +292,6 @@ test("SaaS CLI shutdown closes an incomplete HTTP request after draining service
         MCP_TELEGRAM_FILE_ROOT: s.config.filesRoot,
         TELEGRAM_API_ID: "1",
         TELEGRAM_API_HASH: s.config.apiHash,
-        MCP_INSTAGRAM_ENABLED: "0",
       },
       stdio: ["ignore", "ignore", "pipe"],
     },
