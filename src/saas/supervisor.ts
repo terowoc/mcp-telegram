@@ -41,7 +41,6 @@ interface Options {
     outcome: "ok" | "error";
   }) => void;
   spawn?: typeof fork;
-  reclaimOtherIdle?: () => Promise<void>;
   mediaBudget?: Pick<SaasMediaBudget, "reserve">;
   budget?: WorkerBudget;
 }
@@ -124,7 +123,6 @@ export class WorkerSupervisor {
     } catch (error) {
       if (!(error instanceof CapacityError)) throw error;
     }
-    await this.options.reclaimOtherIdle?.();
     // Serialize replacement and keep the old reservation until the child actually exits.
     const release = await this.admission.acquire(signal);
     try {
