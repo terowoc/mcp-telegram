@@ -130,8 +130,8 @@ export function registerMediaTools(server: McpServer, telegram: TelegramService)
       if (err) return fail(new Error(err));
 
       try {
-        const path = await telegram.downloadMedia(chatId, messageId, downloadPath);
-        return ok(`Media downloaded to ${path}`);
+        const info = await telegram.downloadMediaWithInfo(chatId, messageId, downloadPath);
+        return ok(`Media downloaded to ${downloadPath}`, info);
       } catch (e) {
         return fail(e);
       }

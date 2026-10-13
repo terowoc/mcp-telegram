@@ -5,6 +5,7 @@ import type { TelegramService } from "../telegram-client.js";
 import type { ToolPolicy } from "../tool-policy.js";
 import { registerTools } from "../tools/index.js";
 import { ACCOUNT_LIST_TOOL, accountListDefinition, accountSelector } from "./account-tools.js";
+import { browserDownloadDefinition, DOWNLOAD_TOOL } from "./direct-media-download.js";
 import { DIRECT_UPLOAD_TOOL, directUploadDefinition } from "./direct-media-upload.js";
 
 // Build immutable schemas once; SDK registries, callbacks and transports stay request-local.
@@ -20,6 +21,7 @@ export function registerHostedTools(
   policy: ToolPolicy,
   enableDirectUploads = false,
   enableAccounts = false,
+  enableBrowserDownloads = false,
 ): void {
   for (const { name, tool } of catalog) {
     if (!policy.visible(name, tool as unknown as McpRegisteredTool)) continue;
@@ -27,10 +29,14 @@ export function registerHostedTools(
       name,
       {
         title: tool.title,
-        description: tool.description,
-        inputSchema: enableAccounts
-          ? objectFromShape({ ...(tool.inputSchema ? getObjectShape(tool.inputSchema) : {}), ...accountSelector })
-          : tool.inputSchema,
+        description:
+          enableBrowserDownloads && name === DOWNLOAD_TOOL ? browserDownloadDefinition.description : tool.description,
+        inputSchema:
+          enableBrowserDownloads && name === DOWNLOAD_TOOL
+            ? objectFromShape(browserDownloadDefinition.inputSchema)
+            : enableAccounts
+              ? objectFromShape({ ...(tool.inputSchema ? getObjectShape(tool.inputSchema) : {}), ...accountSelector })
+              : tool.inputSchema,
         outputSchema: tool.outputSchema,
         annotations: tool.annotations ? { ...tool.annotations } : undefined,
         _meta: tool._meta ? { ...tool._meta } : undefined,

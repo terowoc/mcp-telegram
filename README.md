@@ -407,6 +407,10 @@ All tools are auto-discoverable via MCP — your AI client will see the full lis
 | **Business (v1.32.0)** | `telegram-get-business-chat-links`, `telegram-create-business-chat-link`, `telegram-edit-business-chat-link`, `telegram-delete-business-chat-link`, `telegram-resolve-business-chat-link`, `telegram-set-business-hours`, `telegram-set-business-location`, `telegram-set-business-greeting`, `telegram-set-business-away`, `telegram-set-business-intro` |
 | **Opt-in (env-gated)** | `telegram-get-group-call`, `telegram-get-group-call-participants` (requires `MCP_TELEGRAM_ENABLE_GROUP_CALLS=1`); Stars & gifts `telegram-get-stars-status`, `telegram-get-stars-transactions`, `telegram-get-stars-topup-options`, `telegram-get-stars-subscriptions`, `telegram-change-stars-subscription`, `telegram-get-available-star-gifts`, `telegram-get-saved-star-gifts`, `telegram-save-star-gift`, `telegram-convert-star-gift` (requires `MCP_TELEGRAM_ENABLE_STARS=1`); `telegram-get-quick-replies`, `telegram-get-quick-reply-messages` (requires `MCP_TELEGRAM_ENABLE_QUICK_REPLIES=1`) |
 
+Hosted SaaS downloads now return private browser links so you can save Telegram
+files to your device. See the [browser download guide](docs/guides/browser-downloads.md).
+
+
 > **Tip**: Ask your AI assistant *"What Telegram tools are available?"* to get the full list with parameters and descriptions.
 
 ## Optional Features

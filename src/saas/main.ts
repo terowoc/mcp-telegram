@@ -143,6 +143,7 @@ export async function startSaas(config: SaasConfig, options: { spawn?: typeof fo
     gateway = await createHttpGateway({
       publicUrl: config.publicUrl,
       storageDir: join(config.authDir, "oauth"),
+      mediaRoot: config.filesRoot,
       version: config.version,
       identity: createSaasIdentity(store, auth, supervisor),
       cabinetLogin: { contexts, continuations },
