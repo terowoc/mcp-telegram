@@ -94,7 +94,9 @@ const b64 = (data: Uint8Array | Buffer) => Buffer.from(data).toString("base64");
 const unb64 = (text: unknown) => Buffer.from(String(text ?? ""), "base64");
 /** ntgcalls reports the fingerprint as an unsigned 64-bit value; MTProto `long` is signed. */
 export function toSignedLong(value: unknown): bigInt.BigInteger {
-  return bigInt(BigInt.asIntN(64, BigInt(String(value))).toString());
+  // a JSON number would already have lost the low bits of a 64-bit value
+  if (typeof value !== "string") throw new Error("64-bit value must be passed as a string");
+  return bigInt(BigInt.asIntN(64, BigInt(value)).toString());
 }
 
 export function serversFromConnections(connections: Api.TypePhoneConnection[]): Record<string, unknown>[] {
