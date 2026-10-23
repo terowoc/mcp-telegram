@@ -382,7 +382,7 @@ export class PrivateCallManager {
           servers: serversFromConnections(confirmed.connections ?? []),
           library_versions: confirmed.protocol?.libraryVersions ?? [],
           p2p_allowed: Boolean(confirmed.p2pAllowed),
-          custom_parameters: confirmed.customParameters?.data ?? null,
+          custom_parameters: confirmed.customParameters?.data || "{}",
         });
       } else if (pc instanceof Api.PhoneCallDiscarded) {
         const reason = pc.reason;
