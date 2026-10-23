@@ -11,7 +11,7 @@ Audio is signed 16-bit little-endian mono PCM at SAMPLE_RATE, in 10 ms frames (F
 Commands:
   {"op":"start","user_id":int,"dh":{"g":int,"p":b64,"random":b64}}
       -> {"ev":"requested","g_a_hash":b64,"protocol":{...}}
-  {"op":"accepted","g_b":b64}                      -> {"ev":"confirm","g_a":b64,"key_fingerprint":int}
+  {"op":"accepted","g_b":b64}                      -> {"ev":"confirm","g_a":b64,"key_fingerprint":str}
   {"op":"connect","servers":[...],"library_versions":[str],"p2p_allowed":bool,"custom_parameters":str}
       -> {"ev":"state","state":...}
   {"op":"signaling","data":b64}
@@ -87,7 +87,8 @@ class Engine:
 
     async def accepted(self, cmd: dict) -> None:
         auth = await self.ntg.exchange_keys(self.user_id, unb64(cmd["g_b"]), 0)
-        self.emit({"ev": "confirm", "g_a": b64(auth.g_a_or_b), "key_fingerprint": int(auth.key_fingerprint)})
+        # a string: the fingerprint is a 64-bit integer and JSON numbers lose precision above 2**53 in JavaScript
+        self.emit({"ev": "confirm", "g_a": b64(auth.g_a_or_b), "key_fingerprint": str(auth.key_fingerprint)})
 
     async def connect(self, cmd: dict) -> None:
         servers = [ntgcalls.RTCServer(int(s["id"]), s.get("ipv4") or "", s.get("ipv6") or "", int(s["port"]),

@@ -160,6 +160,7 @@ describe("helpers", () => {
   it("converts an unsigned fingerprint to a signed long", () => {
     assert.equal(toSignedLong("18446744073709551615").toString(), "-1");
     assert.equal(toSignedLong("3007118375548879794").toString(), "3007118375548879794");
+    assert.throws(() => toSignedLong(3007118375548879794), /string/);
   });
   it("maps reflector and webrtc connections", () => {
     const s = serversFromConnections([
