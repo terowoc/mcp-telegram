@@ -10,6 +10,19 @@ import type { SessionVault } from "./session-vault.js";
 import type { SaasStore } from "./store.js";
 import { CapacityError, WorkerBudget } from "./worker-budget.js";
 
+/** Opt-in feature flags and their settings that workers need (workers otherwise get a minimal env). */
+const WORKER_FEATURE_ENV = [
+  "MCP_TELEGRAM_ENABLE_PRIVATE_CALLS",
+  "MCP_TELEGRAM_CALL_MEDIA_HOSTS",
+  "MCP_TELEGRAM_CALL_PYTHON",
+] as const;
+export function workerFeatureEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of WORKER_FEATURE_ENV) if (env[key]) out[key] = String(env[key]);
+  if (out.MCP_TELEGRAM_ENABLE_PRIVATE_CALLS === "1" && env.PATH) out.PATH = env.PATH;
+  return out;
+}
+
 export { CapacityError } from "./worker-budget.js";
 
 import {
@@ -210,7 +223,7 @@ export class WorkerSupervisor {
           return;
         }
         const child = (this.options.spawn ?? fork)(fileURLToPath(new URL("./worker.js", import.meta.url)), [], {
-          env: { NODE_ENV: "production", LANG: "C.UTF-8", TZ: "UTC" },
+          env: { NODE_ENV: "production", LANG: "C.UTF-8", TZ: "UTC", ...workerFeatureEnv(process.env) },
           execArgv: ["--max-old-space-size=256"],
           stdio: ["ignore", "ignore", "ignore", "ipc"],
           serialization: "json",

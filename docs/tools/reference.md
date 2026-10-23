@@ -378,6 +378,9 @@ These tools are only registered when the corresponding environment flag is set.
 | ------ | ---------- |
 | `telegram-get-group-call` | `MCP_TELEGRAM_ENABLE_GROUP_CALLS=1` |
 | `telegram-get-group-call-participants` | `MCP_TELEGRAM_ENABLE_GROUP_CALLS=1` |
+| `telegram-call-start` | `MCP_TELEGRAM_ENABLE_PRIVATE_CALLS=1` (+ `MCP_TELEGRAM_CALL_MEDIA_HOSTS`) |
+| `telegram-call-status` | `MCP_TELEGRAM_ENABLE_PRIVATE_CALLS=1` |
+| `telegram-call-end` | `MCP_TELEGRAM_ENABLE_PRIVATE_CALLS=1` |
 | `telegram-get-stars-status` | `MCP_TELEGRAM_ENABLE_STARS=1` |
 | `telegram-get-stars-transactions` | `MCP_TELEGRAM_ENABLE_STARS=1` |
 | `telegram-get-stars-topup-options` | `MCP_TELEGRAM_ENABLE_STARS=1` |

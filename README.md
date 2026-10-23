@@ -405,7 +405,7 @@ All tools are auto-discoverable via MCP — your AI client will see the full lis
 | **Read Receipts (v1.30.0)** | `telegram-get-message-read-participants`, `telegram-get-outbox-read-date` |
 | **Boosts** | `telegram-get-my-boosts`, `telegram-get-boosts-status`, `telegram-get-boosts-list` |
 | **Business (v1.32.0)** | `telegram-get-business-chat-links`, `telegram-create-business-chat-link`, `telegram-edit-business-chat-link`, `telegram-delete-business-chat-link`, `telegram-resolve-business-chat-link`, `telegram-set-business-hours`, `telegram-set-business-location`, `telegram-set-business-greeting`, `telegram-set-business-away`, `telegram-set-business-intro` |
-| **Opt-in (env-gated)** | `telegram-get-group-call`, `telegram-get-group-call-participants` (requires `MCP_TELEGRAM_ENABLE_GROUP_CALLS=1`); Stars & gifts `telegram-get-stars-status`, `telegram-get-stars-transactions`, `telegram-get-stars-topup-options`, `telegram-get-stars-subscriptions`, `telegram-change-stars-subscription`, `telegram-get-available-star-gifts`, `telegram-get-saved-star-gifts`, `telegram-save-star-gift`, `telegram-convert-star-gift` (requires `MCP_TELEGRAM_ENABLE_STARS=1`); `telegram-get-quick-replies`, `telegram-get-quick-reply-messages` (requires `MCP_TELEGRAM_ENABLE_QUICK_REPLIES=1`) |
+| **Opt-in (env-gated)** | `telegram-get-group-call`, `telegram-get-group-call-participants` (requires `MCP_TELEGRAM_ENABLE_GROUP_CALLS=1`); Stars & gifts `telegram-get-stars-status`, `telegram-get-stars-transactions`, `telegram-get-stars-topup-options`, `telegram-get-stars-subscriptions`, `telegram-change-stars-subscription`, `telegram-get-available-star-gifts`, `telegram-get-saved-star-gifts`, `telegram-save-star-gift`, `telegram-convert-star-gift` (requires `MCP_TELEGRAM_ENABLE_STARS=1`); `telegram-get-quick-replies`, `telegram-get-quick-reply-messages` (requires `MCP_TELEGRAM_ENABLE_QUICK_REPLIES=1`); private voice calls `telegram-call-start`, `telegram-call-status`, `telegram-call-end` (requires `MCP_TELEGRAM_ENABLE_PRIVATE_CALLS=1`) |
 
 Hosted SaaS downloads now return private browser links so you can save Telegram
 files to your device. See the [browser download guide](docs/guides/browser-downloads.md).
@@ -420,6 +420,7 @@ Some tools are disabled by default and must be opted in via environment variable
 | Variable | Value | Tools enabled |
 |----------|-------|---------------|
 | `MCP_TELEGRAM_ENABLE_GROUP_CALLS` | `1` | `telegram-get-group-call`, `telegram-get-group-call-participants` |
+| `MCP_TELEGRAM_ENABLE_PRIVATE_CALLS` | `1` | `telegram-call-start`, `telegram-call-status`, `telegram-call-end` (private voice calls; media via the bundled ntgcalls engine, bridge hosts in `MCP_TELEGRAM_CALL_MEDIA_HOSTS`) |
 | `MCP_TELEGRAM_ENABLE_STARS` | `1` | Stars balance & transactions, top-up options, subscriptions, and Star Gifts (browse / save / convert) |
 | `MCP_TELEGRAM_ENABLE_QUICK_REPLIES` | `1` | `telegram-get-quick-replies`, `telegram-get-quick-reply-messages` |
 

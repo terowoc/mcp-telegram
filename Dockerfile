@@ -12,9 +12,16 @@ RUN npx tsc
 RUN npm prune --omit=dev
 
 FROM node:24.15-bookworm-slim
-ENV NODE_ENV=production MCP_WEB_ROOT=/app/web
+ENV NODE_ENV=production MCP_WEB_ROOT=/app/web MCP_TELEGRAM_CALL_PYTHON=/opt/calls/venv/bin/python
 WORKDIR /app
+# Opt-in private voice calls: Python media engine (ntgcalls) in its own venv, pinned by hash.
+COPY packaging/calls/requirements.txt /opt/calls/requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv && rm -rf /var/lib/apt/lists/* \
+  && python3 -m venv /opt/calls/venv \
+  && /opt/calls/venv/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes -r /opt/calls/requirements.txt \
+  && /opt/calls/venv/bin/python -c "import ntgcalls; ntgcalls.NTgCalls.get_protocol()"
 COPY --from=builder --chown=node:node /app/dist ./dist
+COPY --chown=node:node src/calls/engine.py ./dist/calls/engine.py
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/apps/dashboard/dist ./web
 COPY --chown=node:node packaging/compose.production.yaml ./deployment/compose.production.yaml
