@@ -7,6 +7,7 @@ import bigInt from "big-integer";
 import QRCode from "qrcode";
 import { TelegramClient } from "telegram";
 import { CustomFile } from "telegram/client/uploads.js";
+import { Raw } from "telegram/events/index.js";
 import { Logger, LogLevel } from "telegram/extensions/Logger.js";
 import type { ProxyInterface } from "telegram/network/connection/TCPMTProxy.js";
 import { computeCheck } from "telegram/Password.js";
@@ -14,6 +15,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
 import { getInputUser, getPeerId } from "telegram/Utils.js";
 import { boundedMap } from "./bounded-map.js";
+import { type CallStatus, PrivateCallManager } from "./calls/private-call.js";
 import { SingleFlight } from "./connection-lifecycle.js";
 import { mediaPolicy } from "./file-policy.js";
 import { MetadataCache } from "./metadata-cache.js";
@@ -2285,9 +2287,9 @@ export class TelegramService {
     // TotalList.total comes from Telegram response count, not page length.
     // Only an unfiltered latest page containing the entire reported history
     // can establish exhaustion without maintaining cross-page scan state.
-    return Object.assign(results, { reachedEnd:
-      !offsetId && !minDate && !maxDate &&
-      Number.isSafeInteger(messages.total) && messages.total === messages.length,
+    return Object.assign(results, {
+      reachedEnd:
+        !offsetId && !minDate && !maxDate && Number.isSafeInteger(messages.total) && messages.total === messages.length,
     });
   }
 
@@ -5876,6 +5878,52 @@ export class TelegramService {
   }
 
   // ─── Group calls ───────────────────────────────────────────────────────────
+
+  private privateCallManager?: PrivateCallManager;
+
+  /** Private 1:1 voice calls placed by this account (media via the ntgcalls engine, see src/calls). */
+  private privateCalls(): PrivateCallManager {
+    if (!this.privateCallManager) {
+      this.privateCallManager = new PrivateCallManager({
+        telegram: {
+          invoke: async <R>(request: Api.AnyRequest) => {
+            if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+            return (await this.client.invoke(request)) as R;
+          },
+          getInputUser: async (user: string) => {
+            if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+            const peer = await this.client.getInputEntity(await this.resolvePeer(user));
+            if (peer instanceof Api.InputPeerUser)
+              return new Api.InputUser({ userId: peer.userId, accessHash: peer.accessHash });
+            if (peer instanceof Api.InputPeerSelf) throw new Error("Cannot call your own account");
+            throw new Error("Calls can only be placed to a user, not a group or channel");
+          },
+          onUpdate: (handler: (update: unknown) => void) => {
+            const client = this.client;
+            if (!client) return () => {};
+            const event = new Raw({});
+            const callback = async (update: unknown) => handler(update);
+            client.addEventHandler(callback, event);
+            return () => client.removeEventHandler(callback, event);
+          },
+        },
+      });
+    }
+    return this.privateCallManager;
+  }
+
+  async startPrivateCall(user: string, mediaUrl: string, options: { maxSeconds?: number } = {}): Promise<CallStatus> {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    return this.privateCalls().start({ user, mediaUrl, maxSeconds: options.maxSeconds });
+  }
+
+  getPrivateCallStatus(callId?: string): CallStatus | undefined {
+    return this.privateCallManager?.status(callId);
+  }
+
+  async endPrivateCall(callId?: string): Promise<CallStatus | undefined> {
+    return this.privateCallManager?.end(callId);
+  }
 
   async getGroupCall(chatId: string, options: { limit?: number } = {}): Promise<GroupCallSummary> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);

@@ -1,0 +1,2 @@
+# Media engine for opt-in private voice calls (src/calls/engine.py). Pinned with hash; installed at build time.
+ntgcalls==3.0.5 --hash=sha256:13801e7ceddbf83a6e87c9ae5d2173ffec571aa2546dd2216cf2854b214733d5
