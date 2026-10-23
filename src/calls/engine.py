@@ -74,11 +74,9 @@ class Engine:
         self.user_id = int(cmd["user_id"])
         dh = cmd["dh"]
         await self.ntg.create_p2p_call(self.user_id)
-        # what we send (capture) and what we receive (playback) are both raw PCM handled by this process
+        # what we send is raw PCM written by this process; receiving is switched on after connect_p2p
         await self.ntg.set_stream_sources(self.user_id, ntgcalls.StreamMode.CAPTURE,
                                           ntgcalls.MediaDescription(self._external_audio(), None, None, None))
-        await self.ntg.set_stream_sources(self.user_id, ntgcalls.StreamMode.PLAYBACK,
-                                          ntgcalls.MediaDescription(None, self._external_audio(), None, None))
         g_a_hash = await self.ntg.init_exchange(self.user_id, ntgcalls.DhConfig(int(dh["g"]), unb64(dh["p"]), unb64(dh["random"])), None)
         p = ntgcalls.NTgCalls.get_protocol()
         self.emit({"ev": "requested", "g_a_hash": b64(g_a_hash), "protocol": {
@@ -97,6 +95,9 @@ class Engine:
                    for s in cmd["servers"]]
         await self.ntg.connect_p2p(self.user_id, servers, list(cmd["library_versions"]), bool(cmd["p2p_allowed"]),
                                    cmd.get("custom_parameters") or "{}")  # ntgcalls parses it as JSON
+        # incoming audio: in PLAYBACK mode the remote side's voice goes in the microphone slot (as in pytgcalls' record)
+        await self.ntg.set_stream_sources(self.user_id, ntgcalls.StreamMode.PLAYBACK,
+                                          ntgcalls.MediaDescription(self._external_audio(), None, None, None))
         self.emit({"ev": "state", "state": "connecting"})
 
     async def signaling(self, cmd: dict) -> None:
