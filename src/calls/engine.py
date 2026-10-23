@@ -12,7 +12,7 @@ Commands:
   {"op":"start","user_id":int,"dh":{"g":int,"p":b64,"random":b64}}
       -> {"ev":"requested","g_a_hash":b64,"protocol":{...}}
   {"op":"accepted","g_b":b64}                      -> {"ev":"confirm","g_a":b64,"key_fingerprint":int}
-  {"op":"connect","servers":[...],"library_versions":[str],"p2p_allowed":bool,"custom_parameters":str|null}
+  {"op":"connect","servers":[...],"library_versions":[str],"p2p_allowed":bool,"custom_parameters":str}
       -> {"ev":"state","state":...}
   {"op":"signaling","data":b64}
   {"op":"audio","pcm":b64}                         (any length; split into 10 ms frames)
@@ -95,7 +95,7 @@ class Engine:
                                       bool(s.get("tcp")), unb64(s["peer_tag"]) if s.get("peer_tag") else None)
                    for s in cmd["servers"]]
         await self.ntg.connect_p2p(self.user_id, servers, list(cmd["library_versions"]), bool(cmd["p2p_allowed"]),
-                                   cmd.get("custom_parameters") or "")
+                                   cmd.get("custom_parameters") or "{}")  # ntgcalls parses it as JSON
         self.emit({"ev": "state", "state": "connecting"})
 
     async def signaling(self, cmd: dict) -> None:
