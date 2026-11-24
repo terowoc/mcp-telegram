@@ -129,3 +129,17 @@ it("invokes recovery after an underlying operation fails to settle", async () =>
   assert.equal(stuck, 1);
   assert.equal(executor.isSettling(), true);
 });
+
+it("gives named tools their own longer deadline and keeps the short one for the rest", async () => {
+  const slow = async () => {
+    await delay(60);
+    return { ok: true };
+  };
+  const executor = new ToolExecutor({
+    tools: { "telegram-download-media": { handler: slow }, "telegram-read-messages": { handler: slow } },
+    timeoutMs: 20,
+    toolTimeoutsMs: { "telegram-download-media": 1000 },
+  });
+  assert.deepEqual(await executor.call("telegram-download-media", {}), { ok: true });
+  await assert.rejects(executor.call("telegram-read-messages", {}), /timed out after 20ms/);
+});

@@ -216,6 +216,11 @@ describe("helpers", () => {
       },
     );
     assert.deepEqual(workerFeatureEnv({ SECRET: "s", PATH: "/x" }), {});
+    assert.deepEqual(
+      workerFeatureEnv({ MCP_TELEGRAM_MAX_DOWNLOAD_BYTES: "20971520", SECRET: "s" }),
+      { MCP_TELEGRAM_MAX_DOWNLOAD_BYTES: "20971520" },
+      "workers enforce the same download limit as the gateway",
+    );
   });
 });
 

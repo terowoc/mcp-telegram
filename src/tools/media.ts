@@ -117,19 +117,37 @@ export function registerMediaTools(server: McpServer, telegram: TelegramService)
   server.registerTool(
     "telegram-download-media",
     {
-      description: "Download media from a Telegram message to a local file",
+      description:
+        "Download media from a Telegram message to a local file (up to 2000 MiB). For large files pass offsetBytes: each call then returns within a few seconds with sizeBytes, totalBytes and done, and other tools can run in between; repeat with offsetBytes=sizeBytes until done is true",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         messageId: z.number().describe("Message ID containing media"),
         downloadPath: z.string().describe("Absolute path to save file"),
+        offsetBytes: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "Download in steps: 0 creates the file, a larger value continues the partial file holding exactly that many bytes. Omit to download the whole file in one call",
+          ),
       },
       annotations: WRITE,
     },
-    async ({ chatId, messageId, downloadPath }) => {
+    async ({ chatId, messageId, downloadPath, offsetBytes }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
+        if (offsetBytes !== undefined) {
+          const step = await telegram.downloadMediaStep(chatId, messageId, downloadPath, offsetBytes);
+          return ok(
+            step.done
+              ? `Media downloaded to ${downloadPath}`
+              : `Downloaded ${step.sizeBytes} of ${step.totalBytes} bytes to ${downloadPath}${step.stalled ? " (Telegram is slow to send it; wait a few seconds)" : ""}; call again with offsetBytes=${step.sizeBytes}`,
+            step,
+          );
+        }
         const info = await telegram.downloadMediaWithInfo(chatId, messageId, downloadPath);
         return ok(`Media downloaded to ${downloadPath}`, info);
       } catch (e) {

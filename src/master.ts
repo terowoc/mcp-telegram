@@ -1,6 +1,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { DOWNLOAD_MEDIA_TOOL, downloadTimeoutMs } from "./file-policy.js";
 import { GlobalLock } from "./global-lock.js";
 import {
   encodeMessage,
@@ -75,6 +76,7 @@ function dispatchFor(mcpServer: McpServerInternal, telegram: TelegramService, op
     tools,
     lock,
     timeoutMs: opts.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS,
+    toolTimeoutsMs: { [DOWNLOAD_MEDIA_TOOL]: downloadTimeoutMs() },
     onTimeout: (name) => telegram.markUnhealthy?.(`tool call timed out: ${name}`),
     onStuck: opts.onStuck,
     settlementGraceMs: opts.settlementGraceMs,

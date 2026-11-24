@@ -7,6 +7,8 @@ export interface ExecutorOptions {
   tools: Record<string, McpRegisteredTool>;
   lock?: GlobalLock;
   timeoutMs?: number;
+  /** Longer limits for named tools (a large media download takes minutes, not seconds). */
+  toolTimeoutsMs?: Record<string, number>;
   maxResultBytes?: number;
   onTimeout?: (name: string) => void;
   onStuck?: () => void;
@@ -46,7 +48,8 @@ export class ToolExecutor {
     if (this.settling) throw new Error("Telegram executor unavailable: previous operation is still settling");
     const tool = Object.hasOwn(this.options.tools, name) ? this.options.tools[name] : undefined;
     if (!tool || tool.enabled === false) throw new Error(`Unknown tool: ${name}`);
-    const deadline = Math.min(options.deadlineAt ?? Infinity, Date.now() + this.timeoutMs);
+    const timeoutMs = this.options.toolTimeoutsMs?.[name] ?? this.timeoutMs;
+    const deadline = Math.min(options.deadlineAt ?? Infinity, Date.now() + timeoutMs);
     if (!Number.isFinite(deadline) || deadline <= Date.now())
       throw new Error(`Tool deadline expired before execution: ${name}`);
     const controller = new AbortController();
@@ -57,7 +60,7 @@ export class ToolExecutor {
     const timer = setTimeout(
       () => {
         this.counts.timeouts++;
-        controller.abort(new Error(`Tool call timed out after ${this.timeoutMs}ms: ${name}`));
+        controller.abort(new Error(`Tool call timed out after ${timeoutMs}ms: ${name}`));
         if (started) this.options.onTimeout?.(name);
       },
       Math.max(1, deadline - Date.now()),

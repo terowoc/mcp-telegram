@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { chmod, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, type FileHandle, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,26 @@ import { getInputUser, getPeerId } from "telegram/Utils.js";
 import { boundedMap } from "./bounded-map.js";
 import { type CallStatus, PrivateCallManager } from "./calls/private-call.js";
 import { SingleFlight } from "./connection-lifecycle.js";
-import { mediaPolicy } from "./file-policy.js";
+import {
+  DOWNLOAD_STEP_HOLD_MS,
+  DOWNLOAD_STEP_MAX_BYTES,
+  DOWNLOAD_STEP_MS,
+  DOWNLOAD_STEP_STALL_MS,
+  type FilePolicy,
+  mediaPolicy,
+} from "./file-policy.js";
+import {
+  describeMessageMedia,
+  isKnownUndownloadable,
+  MediaReader,
+  type MediaSource,
+  notDownloadable,
+  TelegramMediaError,
+  type UploadedFile,
+  type UploadStreamOptions,
+  uploadStream as uploadStreamToTelegram,
+  writeAll,
+} from "./media-transfer.js";
 import { MetadataCache } from "./metadata-cache.js";
 import { operationSignal } from "./operation-context.js";
 import { RateLimiter } from "./rate-limiter.js";
@@ -210,6 +229,39 @@ const DEFAULT_SESSION_FILE = join(DEFAULT_SESSION_DIR, "session");
 const SESSION_STRING_RE = /^[A-Za-z0-9+/=]+$/;
 const MIN_SESSION_LENGTH = 100;
 const NOT_CONNECTED_ERROR = "Not connected. Run telegram-status to check or telegram-login to authenticate.";
+/** Largest chunk MediaReader.stream yields (one upload.GetFile request). */
+const MEDIA_CHUNK_BYTES = 512 * 1024;
+/** A located file is reused by the next download step for this long after its last use. */
+const RECENT_MEDIA_TTL_MS = 2 * 60000;
+
+/** Identity of one message's media for the download-step cache. */
+function mediaKey(chatId: string, messageId: number): string {
+  return JSON.stringify([chatId, messageId]);
+}
+
+/** A chunk read still waiting on Telegram when its download step ended, at this file offset. */
+type InflightRead = {
+  offset: number;
+  chunks: AsyncGenerator<Buffer>;
+  pending: Promise<IteratorResult<Buffer>>;
+  /** The call the read started under; a read of a cancelled call fails, so it isn't resumed. */
+  signal?: AbortSignal;
+};
+
+/** The promise's value if it settles by `at` (epoch ms), otherwise undefined. */
+async function settledBy<T>(promise: Promise<T>, at: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), Math.max(0, at - Date.now()));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Telegram's invite-bearing requests (`messages.createChat`, `messages.addChatUser`,
@@ -383,6 +435,15 @@ export class TelegramService {
   private qrLogin: Promise<{ success: boolean; message: string }> | undefined;
   private qrAbort: AbortController | undefined;
   private client: TelegramClient | null = null;
+  /** The file the last download step read, so the next step can skip the message lookup. */
+  private recentMedia?: {
+    key: string;
+    source: MediaSource;
+    fileName: string;
+    usedAt: number;
+    /** A read the last download step left waiting on Telegram, for the next step to continue. */
+    inflight?: InflightRead;
+  };
   private apiId: number;
   private apiHash: string;
   private sessionString = "";
@@ -1365,31 +1426,280 @@ export class TelegramService {
     return downloadPath;
   }
 
+  /**
+   * Stream a message's original file to `downloadPath` without holding it in memory
+   * (512 KiB requests, see media-transfer.ts). The size is checked against the
+   * download limit before any byte is fetched and again while bytes arrive; the
+   * output is created fresh inside the file root, and a failed download leaves no file.
+   */
   async downloadMediaWithInfo(
     chatId: string,
     messageId: number,
     downloadPath: string,
+    signal: AbortSignal | undefined = operationSignal(),
   ): Promise<{ fileName: string; sizeBytes: number }> {
+    const { reader, fileName } = await this.locateMedia(chatId, messageId, false);
+    const policy = mediaPolicy();
+    policy.checkDownloadSize(reader.info.size);
+    const output = await policy.openOutput(downloadPath);
+    let written = 0;
+    try {
+      ({ written } = await this.writeMedia(reader, output.handle, 0, policy, signal));
+      if (!written) throw new Error("Failed to download media");
+    } catch (e) {
+      await output.handle.close().catch(() => {});
+      await rm(output.path, { force: true });
+      throw e;
+    }
+    await output.handle.close();
+    return { fileName, sizeBytes: written };
+  }
+
+  /**
+   * One short step of a download that continues over several calls, so no call holds the
+   * account for long: offsetBytes 0 creates the file, a larger offset continues the partial
+   * file, which must hold exactly that many bytes. A step reads for about DOWNLOAD_STEP_MS
+   * and at most DOWNLOAD_STEP_MAX_BYTES. When the next chunk hasn't arrived after `stallMs` (a
+   * slow link, or a FLOOD_WAIT that GramJS sleeps through and can't be interrupted) the step
+   * returns early with `stalled`, long before the tool deadline. The read keeps going, and the
+   * next step at that offset continues waiting for it, so a slow chunk is never asked for twice.
+   * A failed or empty first step leaves no file; a failed later step keeps the partial file,
+   * so the caller can retry from its size or delete it.
+   */
+  async downloadMediaStep(
+    chatId: string,
+    messageId: number,
+    downloadPath: string,
+    offsetBytes: number,
+    signal: AbortSignal | undefined = operationSignal(),
+    stallMs = DOWNLOAD_STEP_STALL_MS,
+  ): Promise<{ fileName: string; sizeBytes: number; totalBytes: number; done: boolean; stalled?: true }> {
+    if (!Number.isSafeInteger(offsetBytes) || offsetBytes < 0)
+      throw new TelegramMediaError("INVALID_RANGE", "offsetBytes must be a non-negative integer.");
+    const waiting = this.recentMedia?.key === mediaKey(chatId, messageId) ? this.recentMedia.inflight : undefined;
+    // A continuing step, or a first step whose read is still waiting, reuses the located file.
+    const { reader, fileName, entry } = await this.locateMedia(
+      chatId,
+      messageId,
+      offsetBytes > 0 || waiting?.offset === 0,
+    );
+    // Claim the waiting read if it is at this offset and its call wasn't cancelled; any other
+    // waiting read is dropped.
+    const resume =
+      entry.inflight?.offset === offsetBytes && !entry.inflight.signal?.aborted ? entry.inflight : undefined;
+    entry.inflight = undefined;
+    const totalBytes = reader.info.size;
+    const policy = mediaPolicy();
+    policy.checkDownloadSize(totalBytes);
+    if (offsetBytes > totalBytes)
+      throw new TelegramMediaError("INVALID_RANGE", `offsetBytes is past the end of the ${totalBytes}-byte file.`);
+    const output = offsetBytes
+      ? await policy.openPartial(downloadPath, offsetBytes)
+      : await policy.openOutput(downloadPath);
+    const started = Date.now();
+    let chunkAt = started;
+    let result: { written: number; stalled: boolean; left?: InflightRead };
+    try {
+      result = await this.writeMedia(reader, output.handle, offsetBytes, policy, signal, {
+        resume,
+        // Stop after DOWNLOAD_STEP_MS, or earlier when the next chunk would likely keep the
+        // account past DOWNLOAD_STEP_HOLD_MS, or would pass the step's reserved bytes.
+        stop: (n) => {
+          const now = Date.now(),
+            chunkMs = now - chunkAt;
+          chunkAt = now;
+          return (
+            now - started >= DOWNLOAD_STEP_MS ||
+            now - started + chunkMs > DOWNLOAD_STEP_HOLD_MS ||
+            n + MEDIA_CHUNK_BYTES > DOWNLOAD_STEP_MAX_BYTES
+          );
+        },
+        stallAt: started + stallMs,
+      });
+      if (!offsetBytes && !result.written && !result.stalled) throw new Error("Failed to download media");
+    } catch (e) {
+      await output.handle.close().catch(() => {});
+      if (!offsetBytes) await rm(output.path, { force: true });
+      throw e;
+    }
+    await output.handle.close();
+    // An empty first step leaves no file, so the caller simply starts at 0 again.
+    if (!offsetBytes && !result.written) await rm(output.path, { force: true });
+    if (result.left) entry.inflight = result.left;
+    const sizeBytes = offsetBytes + result.written;
+    return {
+      fileName,
+      sizeBytes,
+      totalBytes,
+      done: sizeBytes >= totalBytes,
+      ...(result.stalled ? { stalled: true as const } : {}),
+    };
+  }
+
+  /**
+   * Find a message's original file and open a reader for it. A continuing download step
+   * (`reuse`) skips the message lookup while the same file was located recently, so a long
+   * download does not call getMessages every two seconds.
+   */
+  private async locateMedia(
+    chatId: string,
+    messageId: number,
+    reuse: boolean,
+  ): Promise<{ reader: MediaReader; fileName: string; entry: NonNullable<TelegramService["recentMedia"]> }> {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
+    const key = mediaKey(chatId, messageId);
+    const recent = this.recentMedia;
+    let entry = reuse && recent?.key === key && Date.now() - recent.usedAt < RECENT_MEDIA_TTL_MS ? recent : undefined;
+    if (!entry) {
+      const message = await this.loadMediaMessage(chatId, messageId);
+      if (isKnownUndownloadable(message.media)) throw notDownloadable(message.media);
+      const source = describeMessageMedia(message.media);
+      const info = this.extractMediaInfo(message.media);
+      entry = {
+        key,
+        source,
+        usedAt: 0,
+        fileName:
+          info?.fileName ??
+          source.info.fileName ??
+          (info?.type === "photo" ? `telegram-photo-${messageId}.jpg` : `telegram-${messageId}.bin`),
+      };
+      this.recentMedia = entry;
+    }
+    entry.usedAt = Date.now();
+    const found = entry;
+    const reader = new MediaReader(client, found.source, async () => {
+      const fresh = await this.loadMediaSource(chatId, messageId);
+      // Keep a refreshed file reference for the next step, never a replaced file.
+      if (fresh.info.fileId === found.source.info.fileId) found.source = fresh;
+      return fresh;
+    });
+    return { reader, fileName: found.fileName, entry: found };
+  }
+
+  /**
+   * Write the file from `offset` to the end, or until `stop` says so after a chunk, or until no
+   * chunk has arrived by `stallAt`; then the waiting read is returned as `left`. `resume`
+   * continues a read an earlier step left waiting at `offset`. Returns the bytes written.
+   */
+  private async writeMedia(
+    reader: MediaReader,
+    handle: FileHandle,
+    offset: number,
+    policy: FilePolicy,
+    signal: AbortSignal | undefined,
+    options: { stop?: (written: number) => boolean; stallAt?: number; resume?: InflightRead } = {},
+  ): Promise<{ written: number; stalled: boolean; left?: InflightRead }> {
+    const chunks = options.resume?.chunks ?? reader.stream(offset, signal);
+    let pending = options.resume?.pending;
+    let written = 0,
+      stalled = false,
+      left: InflightRead | undefined;
+    try {
+      for (;;) {
+        pending ??= chunks.next();
+        const next = options.stallAt === undefined ? await pending : await settledBy(pending, options.stallAt);
+        if (!next) {
+          // Still waiting on Telegram: hand the read to the next step instead of dropping it,
+          // unless this call was cancelled (the read then fails when Telegram answers).
+          pending.catch(() => {});
+          const readSignal = options.resume?.signal ?? signal;
+          if (!readSignal?.aborted) left = { offset: offset + written, chunks, pending, signal: readSignal };
+          stalled = true;
+          break;
+        }
+        pending = undefined;
+        if (next.done) break;
+        // A resumed read belongs to an earlier call, so this call's cancellation is checked here.
+        signal?.throwIfAborted();
+        const chunk = next.value;
+        policy.checkDownloadSize(offset + written + chunk.length);
+        let position = offset + written;
+        await writeAll(async (buffer, at, length) => {
+          const result = await handle.write(buffer, at, length, position);
+          position += result.bytesWritten;
+          return result;
+        }, chunk);
+        written += chunk.length;
+        if (options.stop?.(written)) break;
+      }
+    } finally {
+      // A generator with a read in flight can't be closed without waiting for that read.
+      if (!stalled) await chunks.return(undefined);
+    }
+    return { written, stalled, left };
+  }
+
+  /** Load a message for media access, with coded errors for a missing message or media. */
+  private async loadMediaMessage(chatId: string, messageId: number): Promise<Api.Message> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const resolved = await this.resolvePeer(chatId);
     const messages = await this.client.getMessages(resolved, { ids: [messageId] });
     const message = messages[0];
-    if (!message) throw new Error(`Message ${messageId} not found`);
-    if (!message.media) throw new Error(`Message ${messageId} has no media`);
-    const buffer = await this.client.downloadMedia(message, {
-      progressCallback: async (received, total) => {
-        mediaPolicy().checkSize(Number(received));
-        mediaPolicy().checkSize(Number(total));
-      },
-    });
-    if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) throw new Error("Failed to download media");
-    await mediaPolicy().save(downloadPath, buffer as Buffer);
-    const info = this.extractMediaInfo(message.media);
-    return {
-      fileName:
-        info?.fileName ?? (info?.type === "photo" ? `telegram-photo-${messageId}.jpg` : `telegram-${messageId}.bin`),
-      sizeBytes: buffer.length,
-    };
+    if (!message) {
+      throw new TelegramMediaError("MESSAGE_NOT_FOUND", `Message ${messageId} was not found in this chat.`);
+    }
+    if (!message.media) throw new TelegramMediaError("NO_MEDIA", `Message ${messageId} has no media.`);
+    return message;
+  }
+
+  private async loadMediaSource(chatId: string, messageId: number): Promise<MediaSource> {
+    return describeMessageMedia((await this.loadMediaMessage(chatId, messageId)).media);
+  }
+
+  /**
+   * Locate a message's original file and return a reader for byte ranges of it.
+   * One message lookup serves every read; an expired file reference reloads it once.
+   */
+  async openMedia(chatId: string, messageId: number): Promise<MediaReader> {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
+    const source = await this.loadMediaSource(chatId, messageId);
+    return new MediaReader(client, source, () => this.loadMediaSource(chatId, messageId));
+  }
+
+  /** Size, MIME type and name of a message's original file, without downloading it. */
+  async getMediaInfo(chatId: string, messageId: number) {
+    return (await this.openMedia(chatId, messageId)).info;
+  }
+
+  /** Read `length` bytes at `offset` of a message's original file straight from Telegram. */
+  async readMediaRange(
+    chatId: string,
+    messageId: number,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    signal?.throwIfAborted();
+    return (await this.openMedia(chatId, messageId)).readRange(offset, length, signal);
+  }
+
+  /** Stream a message's original file from `offset` in chunks of at most 512 KiB. */
+  async *streamMedia(
+    chatId: string,
+    messageId: number,
+    opts: { offset?: number; signal?: AbortSignal } = {},
+  ): AsyncGenerator<Buffer> {
+    opts.signal?.throwIfAborted();
+    const reader = await this.openMedia(chatId, messageId);
+    yield* reader.stream(opts.offset ?? 0, opts.signal);
+  }
+
+  /**
+   * Upload `size` bytes from `source` into Telegram as they arrive, without disk or full
+   * buffering (upstream #138). Not wired into the send tools here yet.
+   */
+  async uploadStream(
+    source: AsyncIterable<Uint8Array>,
+    size: number,
+    fileName: string,
+    signal?: AbortSignal,
+    opts?: UploadStreamOptions,
+  ): Promise<UploadedFile> {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    return uploadStreamToTelegram(this.client, source, size, fileName, signal, opts);
   }
 
   /**
@@ -1421,6 +1731,8 @@ export class TelegramService {
     const message = messages[0];
     if (!message) throw new Error(`Message ${messageId} not found`);
     if (!message.media) throw new Error(`Message ${messageId} has no media`);
+    // Fail with the media type up front instead of GramJS's "not implemented" or empty bytes.
+    if (isKnownUndownloadable(message.media)) throw notDownloadable(message.media);
 
     let isThumb = false;
     let buffer: Buffer | undefined;

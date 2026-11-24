@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { FilePolicy } from "../file-policy.js";
+import { downloadConcurrency, downloadTimeoutMs, FilePolicy, maxDownloadBytes } from "../file-policy.js";
 import { TelegramService } from "../telegram-client.js";
 
 it("confines media to its root, rejects escapes/URLs/devices and limits size", async () => {
@@ -45,4 +45,35 @@ it("rejects oversized inline profile photos at the service boundary", async () =
     if (previousLimit === undefined) delete process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES;
     else process.env.MCP_TELEGRAM_MAX_MEDIA_BYTES = previousLimit;
   }
+});
+
+it("downloads have their own limit and are written to fresh files inside the root only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mcp-files-"));
+  const root = join(dir, "files");
+  try {
+    const policy = new FilePolicy({ root, maxBytes: 4, maxDownloadBytes: 10 });
+    assert.throws(() => policy.checkSize(5), /limit/);
+    policy.checkDownloadSize(10);
+    assert.throws(() => policy.checkDownloadSize(11), /download limit/);
+    const out = await policy.openOutput(join(root, "video.mp4"));
+    await out.handle.close();
+    await assert.rejects(policy.openOutput(join(root, "video.mp4")), /EEXIST/);
+    await assert.rejects(policy.openOutput(join(root, "../outside.mp4")), /root|Unsafe/);
+    assert.equal(maxDownloadBytes({}), 2000 * 1048576, "defaults to Telegram's own limit");
+    assert.equal(maxDownloadBytes({ MCP_TELEGRAM_MAX_DOWNLOAD_BYTES: "20971520" }), 20971520);
+    assert.throws(() => maxDownloadBytes({ MCP_TELEGRAM_MAX_DOWNLOAD_BYTES: "-1" }), /Invalid/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("download concurrency stays below the worker count, and both download settings have safe bounds", () => {
+  assert.equal(downloadConcurrency({}), 2);
+  assert.equal(downloadConcurrency({ MCP_TELEGRAM_DOWNLOAD_CONCURRENCY: "3" }), 3);
+  for (const bad of ["0", "65", "1.5", "x"])
+    assert.throws(() => downloadConcurrency({ MCP_TELEGRAM_DOWNLOAD_CONCURRENCY: bad }), /Invalid/, bad);
+  assert.equal(downloadConcurrency({ MCP_TELEGRAM_DOWNLOAD_CONCURRENCY: "5", MCP_SAAS_MAX_WORKERS: "3" }), 2);
+  assert.equal(downloadConcurrency({ MCP_SAAS_MAX_WORKERS: "1" }), 1, "at least one turn, even with one worker");
+  assert.equal(downloadTimeoutMs({}), 60 * 60000);
+  assert.throws(() => downloadTimeoutMs({ MCP_TELEGRAM_DOWNLOAD_TIMEOUT_MS: "1000" }), /Invalid/);
 });

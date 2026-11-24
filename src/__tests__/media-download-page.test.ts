@@ -3,8 +3,12 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { DOWNLOAD_SCRIPT } from "../http/media-download-page.js";
 
-for (const name of ["отчёт.pdf", 'report "draft".pdf'])
-  test(`browser page preserves filename ${name} and keeps the capability in a header`, async () => {
+for (const [name, preparing] of [
+  ["отчёт.pdf", false],
+  ['report "draft".pdf', false],
+  ["лекция.mp4", true],
+] as const)
+  test(`browser page preserves filename ${name} and keeps the capability in a header${preparing ? " while the file is still preparing" : ""}`, async () => {
     let click: (() => Promise<void>) | undefined;
     let cleared = false,
       saved = 0;
@@ -24,7 +28,16 @@ for (const name of ["отчёт.pdf", 'report "draft".pdf'])
       },
       replaceWith: (value: unknown) => assert.equal(value, anchor),
     };
-    const status = { textContent: "" };
+    const shown: string[] = [];
+    const status = {
+      set textContent(text: string) {
+        shown.push(text);
+      },
+      get textContent() {
+        return shown.at(-1) ?? "";
+      },
+    };
+    let polls = 0;
     const bytes = Buffer.from("file bytes"),
       token = "a".repeat(43);
     const urls = {
@@ -49,14 +62,21 @@ for (const name of ["отчёт.pdf", 'report "draft".pdf'])
       URLSearchParams,
       URL: urls,
       AbortSignal,
+      Response,
+      TransformStream,
+      setTimeout: (resolve: () => void) => resolve(),
       window: { addEventListener: () => {} },
       fetch: async (path: string, options: { headers: { Authorization: string }; cache: string }) => {
         assert.equal(cleared, true);
         assert.doesNotMatch(path, /token|#/);
         assert.equal(options.headers.Authorization, `Bearer ${token}`);
         assert.equal(options.cache, "no-store");
+        if (preparing && polls++ < 2) {
+          return Response.json({ status: "preparing", receivedBytes: 3 * 1048576 }, { status: 202 });
+        }
         return new Response(bytes, {
           headers: {
+            "Content-Length": String(bytes.length),
             "Content-Disposition": name.includes('"')
               ? "attachment; filename=" + JSON.stringify(name)
               : `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
@@ -71,6 +91,11 @@ for (const name of ["отчёт.pdf", 'report "draft".pdf'])
     assert.equal(saved, 1);
     assert.equal(anchor.href, "blob:test");
     assert.match(status.textContent, /Файл готов/);
+    assert.ok(
+      shown.some((text) => /Скачивается: 0\.0 МБ из 0\.0 МБ/.test(text)),
+      "progress is counted while the bytes stream",
+    );
+    if (preparing) assert.equal(polls, 3, "polled while preparing, then downloaded");
   });
 
 test("a link without its private fragment cannot trigger a browser download", () => {

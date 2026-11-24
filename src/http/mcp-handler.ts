@@ -51,7 +51,12 @@ export function createMcpHandler(
                 content: [
                   {
                     type: "text" as const,
-                    text: `[Скачать ${ticket.fileName.replace(/[\\[\]]/g, "\\$&")}](${ticket.downloadUrl})\nСсылка действует пять минут.`,
+                    text:
+                      ticket.status === "preparing"
+                        ? `[Скачать файл](${ticket.downloadUrl})\nФайл ещё загружается из Telegram (получено ${(
+                            (ticket.receivedBytes ?? 0) / 1048576
+                          ).toFixed(1)} МБ). Ссылка заработает, когда загрузка закончится; страница покажет прогресс.`
+                        : `[Скачать ${ticket.fileName.replace(/[\\[\]]/g, "\\$&")}](${ticket.downloadUrl})\nСсылка действует пять минут.`,
                   },
                 ],
                 structuredContent: ticket,
